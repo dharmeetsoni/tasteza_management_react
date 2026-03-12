@@ -61,12 +61,116 @@ async function getOrCreateRecipeMasterCategoryId(conn) {
   return r.insertId;
 }
 
-// ── Auto-sync menu items cost when recipe cost changes ────
-async function syncMenuItemsCost(conn, recipeId, newCostPerUnit) {
+// ── Cascade cost update: recipe → parent recipes → menu items ────────────────
+// Flow: Recipe1 saved → inventory_item updated (done in PUT before this call)
+//       → cascade finds all parent recipes using Recipe1 as ingredient
+//       → recalculates each parent's total cost using getLivePriceForIng (unit-aware)
+//       → updates parent recipe + recipe_items rows
+//       → syncs menu items linked to each recipe
+//       → recurses up the chain
+async function cascadeRecipeCost(conn, changedRecipeId, newCostPerUnit, visited = new Set()) {
+  if (visited.has(changedRecipeId)) return;
+  visited.add(changedRecipeId);
+
+  // Step 1: sync menu items directly linked to this recipe
   await conn.query(
-    `UPDATE menu_items SET cost_price = ? WHERE recipe_id = ? AND (auto_sync_cost = 1 OR auto_sync_cost IS NULL)`,
-    [parseFloat(newCostPerUnit) || 0, recipeId]
+    `UPDATE menu_items SET cost_price = ? WHERE recipe_id = ?`,
+    [parseFloat(newCostPerUnit) || 0, changedRecipeId]
   );
+
+  // Step 2: ensure this recipe's inventory_item has the correct price AND unit
+  // so that getLivePriceForIng in parent recipes gets the right value without extra conversion
+  await conn.query(
+    `UPDATE inventory_items ii
+     JOIN categories c ON ii.category_id = c.id AND c.name = 'Recipe Master'
+     JOIN recipes r ON ii.name = r.name AND r.id = ?
+     SET ii.purchase_price = ?,
+         ii.selling_price  = ?,
+         ii.unit_id        = r.yield_unit_id,
+         ii.updated_at     = NOW()`,
+    [changedRecipeId, parseFloat(newCostPerUnit), parseFloat(newCostPerUnit)]
+  );
+
+  // Step 3: find all parent recipes that use this recipe as an ingredient
+  const [[recipeRow]] = await conn.query('SELECT name FROM recipes WHERE id=?', [changedRecipeId]);
+  if (!recipeRow) return;
+
+  const [parents] = await conn.query(
+    `SELECT DISTINCT r.id, r.cook_minutes, r.yield_qty, r.serves, r.is_master,
+            r.wastage_percent, r.fuel_profile_id
+     FROM recipes r
+     JOIN recipe_items ri ON ri.recipe_id = r.id
+     JOIN inventory_items ii ON ri.inventory_item_id = ii.id
+     JOIN categories c ON ii.category_id = c.id AND c.name = 'Recipe Master'
+     WHERE ii.name = ? AND r.id != ?`,
+    [recipeRow.name, changedRecipeId]
+  );
+
+  for (const parent of parents) {
+    // Get all ingredients for this parent recipe
+    const [ings] = await conn.query(
+      `SELECT ri.id AS ri_id, ri.quantity, ri.unit_id, ri.inventory_item_id
+       FROM recipe_items ri WHERE ri.recipe_id = ?`,
+      [parent.id]
+    );
+
+    // Recalculate each ingredient's price using getLivePriceForIng (handles unit conversion)
+    let ingCost = 0;
+    for (const i of ings) {
+      const { price } = await getLivePriceForIng(conn, {
+        inventory_item_id: i.inventory_item_id,
+        unit_id: i.unit_id,
+      });
+      const lineCost = (parseFloat(i.quantity) || 0) * price;
+      ingCost += lineCost;
+
+      // Update stored price_per_unit and line_cost on the ingredient row
+      await conn.query(
+        `UPDATE recipe_items SET price_per_unit = ?, line_cost = ? WHERE id = ?`,
+        [price, lineCost, i.ri_id]
+      );
+    }
+
+    // Fuel cost
+    let fuelCost = 0;
+    if (parent.fuel_profile_id && parent.cook_minutes) {
+      const [[fp]] = await conn.query('SELECT per_minute FROM fuel_profiles WHERE id=?', [parent.fuel_profile_id]);
+      if (fp) fuelCost = parseFloat(fp.per_minute) * parseFloat(parent.cook_minutes);
+    }
+
+    // Staff cost
+    const [staff] = await conn.query(
+      `SELECT staff_count, per_minute FROM recipe_salary_staff WHERE recipe_id = ?`,
+      [parent.id]
+    );
+    const staffCost = staff.reduce((s, st) =>
+      s + (parseFloat(st.per_minute) || 0) * (parseFloat(parent.cook_minutes) || 0) * (parseFloat(st.staff_count) || 1), 0
+    );
+
+    const wastage     = parseFloat(parent.wastage_percent) || 0;
+    const wastageCost = ingCost * (wastage / 100);
+    const totalCost   = ingCost + wastageCost + staffCost + fuelCost;
+
+    const divisor = parent.is_master
+      ? (parseFloat(parent.yield_qty) || 1)
+      : (parseFloat(parent.serves)    || 1);
+    const newCpp = divisor > 0 ? totalCost / divisor : totalCost;
+
+    // Save recalculated totals on parent recipe
+    await conn.query(
+      `UPDATE recipes SET ingredient_cost=?, wastage_cost=?, fuel_cost=?, salary_total_cost=?,
+              total_cost=?, cost_per_unit=? WHERE id=?`,
+      [ingCost, wastageCost, fuelCost, staffCost, totalCost, newCpp, parent.id]
+    );
+
+    // Recurse: this parent's cost changed, propagate upward
+    await cascadeRecipeCost(conn, parent.id, newCpp, visited);
+  }
+}
+
+// Keep old name as alias
+async function syncMenuItemsCost(conn, recipeId, newCostPerUnit) {
+  await cascadeRecipeCost(conn, recipeId, newCostPerUnit);
 }
 
 // ── GET all ───────────────────────────────────────────────
@@ -314,10 +418,8 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // Auto-sync menu items that link to this recipe
-    await syncMenuItemsCost(conn, req.params.id, parseFloat(cost_per_unit)||0);
-
-    // Inventory sync for Recipe Master
+    // Inventory sync for Recipe Master — MUST happen BEFORE cascade
+    // so that getLivePriceForIng picks up the NEW price when cascading to parent recipes
     const catId = await getOrCreateRecipeMasterCategoryId(conn);
     const cpp = parseFloat(cost_per_unit)||0;
     if (isMaster) {
@@ -340,6 +442,9 @@ router.put('/:id', async (req, res) => {
     } else if (wasMaster) {
       await conn.query('DELETE FROM inventory_items WHERE name=? AND category_id=?', [oldName, catId]);
     }
+
+    // Auto-sync menu items and cascade to parent recipes — AFTER inventory item is updated
+    await syncMenuItemsCost(conn, req.params.id, parseFloat(cost_per_unit)||0);
 
     await conn.commit();
     res.json({ success: true });
@@ -379,4 +484,78 @@ router.delete('/:id', async (req, res) => {
   } finally { conn.release(); }
 });
 
+// ── Recalc all recipes using a given inventory item ─────────────────────────
+// Called when inventory purchase_price changes.
+// Finds every recipe that has this item as an ingredient,
+// fully recalculates it (ingredients + wastage + staff + fuel),
+// updates recipe + recipe_items, then cascades upward via cascadeRecipeCost.
+async function recalcRecipesUsingItem(conn, inventoryItemId) {
+  // Find all recipes that directly use this inventory item
+  const [recipes] = await conn.query(
+    `SELECT DISTINCT r.id, r.is_master, r.yield_qty, r.serves,
+            r.wastage_percent, r.cook_minutes, r.fuel_profile_id
+     FROM recipe_items ri
+     JOIN recipes r ON ri.recipe_id = r.id
+     WHERE ri.inventory_item_id = ?`,
+    [inventoryItemId]
+  );
+
+  for (const recipe of recipes) {
+    // Get all ingredients for this recipe
+    const [ings] = await conn.query(
+      `SELECT ri.id AS ri_id, ri.quantity, ri.unit_id, ri.inventory_item_id
+       FROM recipe_items ri WHERE ri.recipe_id = ?`,
+      [recipe.id]
+    );
+
+    // Recalculate each ingredient line cost using live price + unit conversion
+    let ingCost = 0;
+    for (const i of ings) {
+      const { price } = await getLivePriceForIng(conn, {
+        inventory_item_id: i.inventory_item_id,
+        unit_id: i.unit_id,
+      });
+      const lineCost = (parseFloat(i.quantity) || 0) * price;
+      ingCost += lineCost;
+      // Update stored price_per_unit and line_cost in recipe_items
+      await conn.query(
+        `UPDATE recipe_items SET price_per_unit=?, line_cost=? WHERE id=?`,
+        [price, lineCost, i.ri_id]
+      );
+    }
+
+    // Fuel cost
+    let fuelCost = 0;
+    if (recipe.fuel_profile_id && recipe.cook_minutes) {
+      const [[fp]] = await conn.query('SELECT per_minute FROM fuel_profiles WHERE id=?', [recipe.fuel_profile_id]);
+      if (fp) fuelCost = parseFloat(fp.per_minute) * parseFloat(recipe.cook_minutes);
+    }
+
+    // Staff cost
+    const [staff] = await conn.query(
+      `SELECT staff_count, per_minute FROM recipe_salary_staff WHERE recipe_id=?`,
+      [recipe.id]
+    );
+    const staffCost = staff.reduce((s, st) =>
+      s + (parseFloat(st.per_minute) || 0) * (parseFloat(recipe.cook_minutes) || 0) * (parseFloat(st.staff_count) || 1), 0
+    );
+
+    const wastageCost = ingCost * ((parseFloat(recipe.wastage_percent) || 0) / 100);
+    const totalCost   = ingCost + wastageCost + staffCost + fuelCost;
+    const divisor     = recipe.is_master ? (parseFloat(recipe.yield_qty) || 1) : (parseFloat(recipe.serves) || 1);
+    const newCpp      = divisor > 0 ? totalCost / divisor : totalCost;
+
+    // Update recipe totals
+    await conn.query(
+      `UPDATE recipes SET ingredient_cost=?, wastage_cost=?, fuel_cost=?, salary_total_cost=?,
+              total_cost=?, cost_per_unit=? WHERE id=?`,
+      [ingCost, wastageCost, fuelCost, staffCost, totalCost, newCpp, recipe.id]
+    );
+
+    // Now cascade: update inventory item (if master) + propagate to parent recipes + menu items
+    await cascadeRecipeCost(conn, recipe.id, newCpp, new Set());
+  }
+}
+
 module.exports = router;
+module.exports.recalcRecipesUsingItem = recalcRecipesUsingItem;

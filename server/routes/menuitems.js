@@ -21,8 +21,13 @@ router.get('/', async (req, res) => {
 router.get('/all', async (req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT mi.*, mc.name AS course_name, mc.icon AS course_icon, mc.color AS course_color
-      FROM menu_items mi LEFT JOIN menu_courses mc ON mi.course_id = mc.id
+      SELECT mi.*,
+             mc.name AS course_name, mc.icon AS course_icon, mc.color AS course_color,
+             r.name AS recipe_name,
+             CASE WHEN mi.recipe_id IS NOT NULL THEN r.cost_per_unit ELSE mi.cost_price END AS cost_price
+      FROM menu_items mi
+      LEFT JOIN menu_courses mc ON mi.course_id = mc.id
+      LEFT JOIN recipes r ON mi.recipe_id = r.id
       ORDER BY mc.sort_order ASC, mc.name ASC, mi.name ASC`);
     res.json({ success: true, data: rows });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }

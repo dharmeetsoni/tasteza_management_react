@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../config/db');
 const { authenticate, authorize } = require('../middleware/auth');
+const { recalcRecipesUsingItem } = require('./recipes');
 
 router.use(authenticate);
 
@@ -69,12 +70,14 @@ router.post('/', async (req, res) => {
 
 // ── UPDATE item ──
 router.put('/:id', async (req, res) => {
+  const conn = await db.getConnection();
   try {
     const { name, category_id, unit_id, current_quantity, min_quantity,
             purchase_price, selling_price, supplier, notes } = req.body;
     if (!name || !category_id || !unit_id)
       return res.status(400).json({ success: false, message: 'Name, category and unit are required.' });
-    const [result] = await db.query(
+    await conn.beginTransaction();
+    const [result] = await conn.query(
       `UPDATE inventory_items
        SET name=?, category_id=?, unit_id=?, current_quantity=?, min_quantity=?,
            purchase_price=?, selling_price=?, supplier=?, notes=?
@@ -84,11 +87,18 @@ router.put('/:id', async (req, res) => {
        purchase_price ?? null, selling_price ?? null,
        supplier ?? null, notes ?? null, req.params.id]
     );
-    if (!result.affectedRows) return res.status(404).json({ success: false, message: 'Item not found.' });
+    if (!result.affectedRows) {
+      await conn.rollback(); conn.release();
+      return res.status(404).json({ success: false, message: 'Item not found.' });
+    }
+    // Recalculate all recipes that use this inventory item, then cascade upward
+    await recalcRecipesUsingItem(conn, parseInt(req.params.id));
+    await conn.commit();
     res.json({ success: true, message: 'Item updated.' });
   } catch (err) {
+    await conn.rollback();
     res.status(500).json({ success: false, message: err.message });
-  }
+  } finally { conn.release(); }
 });
 
 // ── DELETE item ──
@@ -192,11 +202,14 @@ router.post('/purchases', async (req, res) => {
        purchase_date, supplier || null, invoice_no || null, notes || null, req.user.id]
     );
 
-    // Update stock quantity
+    // Update stock quantity and price
     await conn.query(
       'UPDATE inventory_items SET current_quantity = current_quantity + ?, purchase_price = ? WHERE id = ?',
       [parseFloat(quantity), parseFloat(price_per_unit), inventory_item_id]
     );
+
+    // Recalculate all recipes using this item with new price
+    await recalcRecipesUsingItem(conn, parseInt(inventory_item_id));
 
     await conn.commit();
     res.status(201).json({ success: true, message: 'Purchase recorded and stock updated.' });
