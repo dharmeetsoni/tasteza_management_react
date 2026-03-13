@@ -7,6 +7,90 @@ const { deductInventoryForOrder } = require('../utils/inventoryDeduct');
 router.use(authenticate);
 
 // GET all orders
+
+// ── PAST DATE ORDER (create + bill + pay in one shot) ─────
+router.post('/past', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const {
+      sale_date, items, order_type, payment_method,
+      customer_name, customer_phone,
+      discount_type, discount_value, notes
+    } = req.body;
+
+    if (!items || !items.length) return res.status(400).json({ success: false, message: 'No items.' });
+    if (!sale_date) return res.status(400).json({ success: false, message: 'sale_date required.' });
+
+    const order_number = 'PAST-' + Date.now().toString().slice(-8);
+    const dt = `${sale_date} 23:59:00`;  // end of that day
+
+    // Create order with backdated created_at
+    const [r] = await conn.query(
+      `INSERT INTO orders (order_number, order_type, status, notes, created_by, created_at)
+       VALUES (?, ?, 'open', ?, ?, ?)`,
+      [order_number, order_type || 'dine_in', notes || null, req.user.id, dt]
+    );
+    const orderId = r.insertId;
+
+    // Insert items
+    let subtotal = 0, totalGst = 0;
+    for (const item of items) {
+      const [[mi]] = await conn.query('SELECT * FROM menu_items WHERE id=?', [item.menu_item_id]);
+      if (!mi) continue;
+      const price  = parseFloat(mi.selling_price);
+      const gstPct = parseFloat(mi.gst_percent) || 0;
+      const qty    = parseInt(item.quantity) || 1;
+      const lineGst   = price * qty * gstPct / 100;
+      const lineTotal = price * qty + lineGst;
+      subtotal  += price * qty;
+      totalGst  += lineGst;
+      await conn.query(
+        `INSERT INTO order_items (order_id,menu_item_id,item_name,quantity,unit_price,gst_percent,gst_amount,total_price)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [orderId, mi.id, mi.name, qty, price, gstPct, lineGst, lineTotal]
+      );
+    }
+    const rawTotal = subtotal + totalGst;
+
+    // Compute discount
+    let discountAmt = 0;
+    if (discount_type === 'percentage' && discount_value > 0)
+      discountAmt = rawTotal * parseFloat(discount_value) / 100;
+    else if (discount_type === 'amount' && discount_value > 0)
+      discountAmt = parseFloat(discount_value);
+    discountAmt = Math.min(discountAmt, rawTotal);
+    const finalTotal = Math.max(0, rawTotal - discountAmt);
+
+    // Bill + Pay in one update (backdated)
+    await conn.query(
+      `UPDATE orders SET
+         subtotal=?, gst_amount=?, discount_type=?, discount_value=?,
+         discount_amount=?, total_amount=?,
+         customer_name=?, customer_phone=?,
+         status='paid', payment_status='paid', payment_method=?,
+         billed_by=?, billed_at=?, paid_at=?
+       WHERE id=?`,
+      [subtotal, totalGst, discount_type || null, parseFloat(discount_value) || 0,
+       discountAmt, finalTotal,
+       customer_name || null, customer_phone || null,
+       payment_method || 'cash',
+       req.user.id, dt, dt, orderId]
+    );
+
+    // Deduct inventory (best-effort)
+    try { await deductInventoryForOrder(conn, orderId, req.user.id); }
+    catch (e) { console.error('[PastOrder] Inventory deduct error:', e.message); }
+
+    await conn.commit();
+    wsHub.broadcast('dashboard', { type: 'stats_update' });
+    res.status(201).json({ success: true, data: { id: orderId, order_number, total_amount: finalTotal, discount_amount: discountAmt, subtotal, gst: totalGst } });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ success: false, message: err.message });
+  } finally { conn.release(); }
+});
+
 router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(`

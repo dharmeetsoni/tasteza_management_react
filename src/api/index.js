@@ -164,6 +164,7 @@ export const deleteCoupon    = (id)        => oMutate('delete', `/coupons/${id}`
 export const getOrders         = ()       => oGet('/orders');
 export const getOrder          = (id)     => oGet(`/orders/${id}`);
 export const createOrder       = (d)      => oMutate('post',  '/orders', d,           true);
+export const createPastOrder   = (d)      => oMutate('post',  '/orders/past', d);
 export const updateOrderItems  = (id, d)  => oMutate('put',   `/orders/${id}/items`, d, true);
 export const sendKOT           = (id, d)  => oMutate('post',  `/orders/${id}/kot`, d, true);
 export const generateBill      = (id, d)  => oMutate('post',  `/orders/${id}/bill`, d, true);
@@ -214,6 +215,11 @@ export const getPaymentsReport   = (p)    => oGet('/reports/payments', p);
 export const getDiscountsReport  = (p)    => oGet('/reports/discounts', p);
 export const getSalaryReport     = (p)    => oGet('/reports/salary-report', p);
 export const getFixedCosts       = (p)    => oGet('/reports/fixed-costs', p);
+export const getDailyPnl          = (p)    => oGet('/reports/daily-pnl', p);
+export const getManualSales       = (p)    => oGet('/reports/manual-sales', p);
+export const addManualSale        = (d)    => oMutate('post',   '/reports/manual-sales', d);
+export const updateManualSale     = (id,d) => oMutate('put',    `/reports/manual-sales/${id}`, d);
+export const deleteManualSale     = (id)   => oMutate('delete', `/reports/manual-sales/${id}`);
 export const addFixedCost        = (d)    => oMutate('post',   '/reports/fixed-costs', d);
 export const updateFixedCost     = (id,d) => oMutate('put',    `/reports/fixed-costs/${id}`, d);
 export const deleteFixedCost     = (id)   => oMutate('delete', `/reports/fixed-costs/${id}`);
@@ -244,7 +250,10 @@ export const deleteAdvanceSalary  = (id)        => oMutate('delete', `/salary-mg
 // ── Expenses ──────────────────────────────────────────────
 export const getExpenses          = (p)    => oGet('/expenses', p);
 export const getExpenseSummary    = (p)    => oGet('/expenses/summary', p);
-export const getExpenseCategories = ()     => oGet('/expenses/categories');
+export const getExpenseCategories    = ()      => oGet('/expenses/categories');
+export const createExpenseCategory  = (d)     => oMutate('post',   '/expenses/categories', d);
+export const updateExpenseCategory  = (id, d) => oMutate('put',    `/expenses/categories/${id}`, d);
+export const deleteExpenseCategory  = (id)    => oMutate('delete', `/expenses/categories/${id}`);
 export const createExpense        = (d)    => oMutate('post',   '/expenses', d);
 export const updateExpense        = (id,d) => oMutate('put',    `/expenses/${id}`, d);
 export const deleteExpense        = (id)   => oMutate('delete', `/expenses/${id}`);

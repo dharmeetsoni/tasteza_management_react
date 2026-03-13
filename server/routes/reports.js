@@ -540,3 +540,187 @@ router.delete('/reset-data', _auth('admin'), async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   } finally { conn.release(); }
 });
+
+// ── DAILY P&L FOR MONTH ───────────────────────────────────
+// Returns per-day breakdown for a given month:
+// sales, base cost, expenses, predicted days, salary/rent/light per day
+router.get('/daily-pnl', async (req, res) => {
+  try {
+    const { month } = req.query;
+    const mth = month || (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+    const [year, mon] = mth.split('-').map(Number);
+    const daysInMonth = new Date(year, mon, 0).getDate();
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+
+    // 1. Daily sales: system orders + manual sales combined
+    const [salesRows] = await db.query(`
+      SELECT date, SUM(total_sale) AS total_sale, SUM(base_cost) AS base_cost,
+             SUM(system_sale) AS system_sale, SUM(manual_sale) AS manual_sale
+      FROM (
+        SELECT
+          DATE_FORMAT(o.created_at,'%Y-%m-%d') AS date,
+          SUM(o.total_amount) AS total_sale,
+          SUM(oi.quantity * COALESCE(mi.cost_price, mi.selling_price * 0.35)) AS base_cost,
+          SUM(o.total_amount) AS system_sale,
+          0 AS manual_sale
+        FROM orders o
+        LEFT JOIN order_items oi ON oi.order_id = o.id
+        LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
+        WHERE o.status = 'paid' AND DATE_FORMAT(o.created_at,'%Y-%m') = ?
+        GROUP BY DATE_FORMAT(o.created_at,'%Y-%m-%d')
+        UNION ALL
+        SELECT
+          DATE_FORMAT(ms.sale_date,'%Y-%m-%d') AS date,
+          SUM(ms.amount) AS total_sale,
+          SUM(ms.base_cost) AS base_cost,
+          0 AS system_sale,
+          SUM(ms.amount) AS manual_sale
+        FROM manual_sales ms
+        WHERE DATE_FORMAT(ms.sale_date,'%Y-%m') = ?
+        GROUP BY DATE_FORMAT(ms.sale_date,'%Y-%m-%d')
+      ) combined GROUP BY date ORDER BY date ASC
+    `, [mth, mth]);
+
+    // 2. Daily expenses — only categories flagged include_in_pnl=1
+    const [expRows] = await db.query(`
+      SELECT DATE_FORMAT(e.date,'%Y-%m-%d') AS date,
+             SUM(e.amount) AS total_expense
+      FROM expenses e
+      JOIN expense_categories ec ON e.category_id = ec.id
+      WHERE DATE_FORMAT(e.date,'%Y-%m') = ?
+        AND ec.include_in_pnl = 1
+      GROUP BY DATE_FORMAT(e.date,'%Y-%m-%d')
+    `, [mth]);
+
+    // 3. Total monthly salary (all active staff)
+    const [salaryData] = await db.query(`
+      SELECT u.monthly_salary, u.work_days_month,
+             COALESCE(adj.extra_days,0) AS extra_days,
+             COALESCE(adj.absent_days,0) AS absent_days
+      FROM users u
+      LEFT JOIN staff_day_adjustments adj ON adj.user_id=u.id AND adj.month=?
+      WHERE u.is_active=1 AND u.monthly_salary > 0
+    `, [mth]);
+    const monthlySalary = salaryData.reduce((s, u) => {
+      const wd = parseFloat(u.work_days_month) || 30;
+      const eff = wd + parseFloat(u.extra_days) - parseFloat(u.absent_days);
+      return s + (parseFloat(u.monthly_salary) / wd) * eff;
+    }, 0);
+    const dailySalary = monthlySalary / daysInMonth;
+
+    // 4. Fixed costs: rent & light for this month (from fixed_costs table)
+    const [fixedRows] = await db.query(`
+      SELECT name, amount, category FROM fixed_costs WHERE month=?
+    `, [mth]);
+    const rentEntry   = fixedRows.find(f => f.category === 'rent')  || fixedRows.find(f => f.name?.toLowerCase().includes('rent'));
+    const lightEntry  = fixedRows.find(f => f.category === 'electricity') || fixedRows.find(f => f.name?.toLowerCase().includes('light') || f.name?.toLowerCase().includes('electric'));
+    const monthlyRent  = parseFloat(rentEntry?.amount  || 0);
+    const monthlyLight = parseFloat(lightEntry?.amount || 0);
+    const dailyRent  = monthlyRent  / daysInMonth;
+    const dailyLight = monthlyLight / daysInMonth;
+
+    // 5. Build day-by-day array
+    const salesMap = {};
+    salesRows.forEach(r => { salesMap[r.date] = {
+      total_sale:   parseFloat(r.total_sale)||0,
+      base_cost:    parseFloat(r.base_cost)||0,
+      system_sale:  parseFloat(r.system_sale)||0,
+      manual_sale:  parseFloat(r.manual_sale)||0,
+    }; });
+    const expMap = {};
+    expRows.forEach(r => { expMap[r.date] = parseFloat(r.total_expense)||0; });
+
+    const days = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${mth}-${String(d).padStart(2,'0')}`;
+      const isPast    = dateStr <= todayStr;
+      const isToday   = dateStr === todayStr;
+      const s = salesMap[dateStr] || { total_sale: 0, base_cost: 0, system_sale: 0, manual_sale: 0 };
+      const expense   = expMap[dateStr] || 0;
+      const totalDeductions = s.base_cost + dailySalary + dailyRent + dailyLight + expense;
+      const profit = s.total_sale - totalDeductions;
+      days.push({
+        date:         dateStr,
+        day:          d,
+        is_past:      isPast,
+        is_today:     isToday,
+        has_sale:     s.total_sale > 0,
+        total_sale:   s.total_sale,
+        system_sale:  s.system_sale,
+        manual_sale:  s.manual_sale,
+        base_cost:    s.base_cost,
+        salary:       dailySalary,
+        rent:         dailyRent,
+        light:        dailyLight,
+        expense:      expense,
+        total_deductions: totalDeductions,
+        profit:       profit,
+      });
+    }
+
+    // 6. Predict remaining days using avg of past days with sales
+    const pastWithSale = days.filter(d => d.is_past && d.has_sale);
+    const avgSale    = pastWithSale.length ? pastWithSale.reduce((s,d)=>s+d.total_sale,0)   / pastWithSale.length : 0;
+    const avgCost    = pastWithSale.length ? pastWithSale.reduce((s,d)=>s+d.base_cost,0)    / pastWithSale.length : 0;
+    const avgExpense = pastWithSale.length ? pastWithSale.reduce((s,d)=>s+d.expense,0)      / pastWithSale.length : 0;
+    const avgProfit  = pastWithSale.length ? pastWithSale.reduce((s,d)=>s+d.profit,0)       / pastWithSale.length : 0;
+
+    res.json({ success: true, data: {
+      month: mth,
+      days_in_month: daysInMonth,
+      monthly: { salary: monthlySalary, rent: monthlyRent, light: monthlyLight },
+      daily:   { salary: dailySalary, rent: dailyRent, light: dailyLight },
+      fixed_costs: fixedRows,
+      days,
+      averages: { sale: avgSale, base_cost: avgCost, expense: avgExpense, profit: avgProfit },
+    }});
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+// ── MANUAL SALES CRUD ─────────────────────────────────────
+router.get('/manual-sales', async (req, res) => {
+  try {
+    const { month, date } = req.query;
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (month) { where += " AND DATE_FORMAT(sale_date,'%Y-%m')=?"; params.push(month); }
+    if (date)  { where += " AND DATE_FORMAT(sale_date,'%Y-%m-%d')=?"; params.push(date); }
+    const [rows] = await db.query(
+      `SELECT ms.*, u.name AS created_by_name
+       FROM manual_sales ms
+       LEFT JOIN users u ON ms.created_by = u.id
+       ${where} ORDER BY sale_date DESC, ms.id DESC`, params);
+    res.json({ success: true, data: rows });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+router.post('/manual-sales', async (req, res) => {
+  try {
+    const { sale_date, amount, base_cost, note, source } = req.body;
+    if (!sale_date || !amount) return res.status(400).json({ success: false, message: 'sale_date and amount required' });
+    const [r] = await db.query(
+      'INSERT INTO manual_sales (sale_date, amount, base_cost, note, source, created_by) VALUES (?,?,?,?,?,?)',
+      [sale_date, parseFloat(amount), parseFloat(base_cost)||0, note||null, source||'manual', req.user.id]
+    );
+    res.status(201).json({ success: true, data: { id: r.insertId } });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+router.put('/manual-sales/:id', authorize('admin','manager'), async (req, res) => {
+  try {
+    const { sale_date, amount, base_cost, note, source } = req.body;
+    await db.query(
+      'UPDATE manual_sales SET sale_date=?, amount=?, base_cost=?, note=?, source=? WHERE id=?',
+      [sale_date, parseFloat(amount), parseFloat(base_cost)||0, note||null, source||'manual', req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+router.delete('/manual-sales/:id', authorize('admin','manager'), async (req, res) => {
+  try {
+    await db.query('DELETE FROM manual_sales WHERE id=?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});

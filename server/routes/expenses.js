@@ -13,8 +13,43 @@ const localDate = () => {
 // GET all categories
 router.get('/categories', async (req, res) => {
   try {
-    const [rows] = await db.query('SELECT * FROM expense_categories WHERE is_active=1 ORDER BY name');
+    const [rows] = await db.query('SELECT * FROM expense_categories ORDER BY name');
     res.json({ success: true, data: rows });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// CREATE category
+router.post('/categories', authorize('admin','manager'), async (req, res) => {
+  try {
+    const { name, icon, color, include_in_pnl } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: 'Name required' });
+    const [r] = await db.query(
+      'INSERT INTO expense_categories (name, icon, color, include_in_pnl) VALUES (?,?,?,?)',
+      [name, icon||'📦', color||'#5a5a78', include_in_pnl ? 1 : 0]
+    );
+    res.status(201).json({ success: true, data: { id: r.insertId } });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// UPDATE category
+router.put('/categories/:id', authorize('admin','manager'), async (req, res) => {
+  try {
+    const { name, icon, color, include_in_pnl, is_active } = req.body;
+    await db.query(
+      'UPDATE expense_categories SET name=?, icon=?, color=?, include_in_pnl=?, is_active=? WHERE id=?',
+      [name, icon||'📦', color||'#5a5a78', include_in_pnl ? 1 : 0, is_active !== undefined ? (is_active ? 1 : 0) : 1, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// DELETE category
+router.delete('/categories/:id', authorize('admin'), async (req, res) => {
+  try {
+    const [[{ cnt }]] = await db.query('SELECT COUNT(*) AS cnt FROM expenses WHERE category_id=?', [req.params.id]);
+    if (cnt > 0) return res.status(400).json({ success: false, message: `Cannot delete — ${cnt} expense(s) use this category.` });
+    await db.query('DELETE FROM expense_categories WHERE id=?', [req.params.id]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 

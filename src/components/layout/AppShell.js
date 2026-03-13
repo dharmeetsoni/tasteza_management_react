@@ -25,9 +25,12 @@ import UsersPage         from '../pages/UsersPage';
 import ProfilePage       from '../pages/ProfilePage';
 import StaffPage         from '../pages/StaffPage';
 import ReportsPage       from '../pages/ReportsPage';
+import ProfitLossPage    from '../pages/ProfitLossPage';
+import PastOrderPage     from '../pages/PastOrderPage';
 import BillSettingsPage  from '../pages/BillSettingsPage';
 import SalaryMgmtPage   from '../pages/SalaryMgmtPage';
 import ExpensesPage      from '../pages/ExpensesPage';
+import ExpenseCategoryManagerPage from '../pages/ExpenseCategoryManagerPage';
 import KDSPage           from '../pages/KDSPage';
 import DashboardPage     from '../pages/DashboardPage';
 
@@ -61,10 +64,13 @@ const NAV = [
   { sep:true, id:'s2'  },
   { id:'salarymgmt',     label:'Salary Manager',     icon:'💰', section:'COSTS'   },
   { id:'expenses',       label:'Expense Manager',    icon:'💸'                    },
+  { id:'expcategories',  label:'Expense Categories',  icon:'🏷️'                    },
   { id:'fuel',           label:'Fuel Manager',       icon:'🔥'                    },
   { sep:true, id:'s3'  },
   { id:'staff',          label:'Staff Management',   icon:'👥', section:'ADMIN'   },
   { id:'reports',        label:'Reports',            icon:'📊'                    },
+  { id:'profitloss',     label:'Profit & Loss',      icon:'📈'                    },
+  { id:'pastorder',      label:'Past Date Sale',      icon:'🕐'                    },
   { id:'billsettings',   label:'Bill Settings',      icon:'🧾', adminOnly:false   },
   { id:'users',          label:'Users & Access',     icon:'🔐', adminOnly:true    },
   { id:'profile',        label:'My Profile',         icon:'👤'                    },
@@ -153,9 +159,12 @@ export default function AppShell() {
       case 'salary':         return <SalaryPage />;
       case 'salarymgmt':     return <SalaryMgmtPage />;
       case 'expenses':       return <ExpensesPage />;
+      case 'expcategories':  return <ExpenseCategoryManagerPage />;
       case 'fuel':           return <FuelPage />;
       case 'staff':          return <StaffPage />;
       case 'reports':        return <ReportsPage />;
+      case 'profitloss':     return <ProfitLossPage />;
+      case 'pastorder':      return <PastOrderPage />;
       case 'billsettings':   return <BillSettingsPage />;
       case 'users':          return <UsersPage />;
       case 'profile':        return <ProfilePage />;
