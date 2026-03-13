@@ -338,6 +338,14 @@ export default function KOTPage() {
         )}
         <div className="mft"><button className="btn-c" onClick={() => setViewKOT(null)}>Close</button></div>
       </Modal>
+
+      <ConfirmModal
+        show={!!delKOT}
+        onClose={() => setDelKOT(null)}
+        onConfirm={doDeleteKOT}
+        title={`Delete ${delKOT?.kot_number}?`}
+        message="This will remove the KOT and allow its items to be re-sent. This cannot be undone."
+      />
     </div>
   );
 }

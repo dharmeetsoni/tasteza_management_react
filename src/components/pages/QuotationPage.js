@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   getMenuItemsAll, getCourses, getSettings,
-  getQuotations, createQuotation, deleteQuotation,
+  getQuotations, getQuotation, createQuotation, updateQuotation, deleteQuotation,
 } from '../../api';
 import { useToast } from '../../context/ToastContext';
 import { fmtCur } from '../../utils';
@@ -29,108 +29,173 @@ const STATUS_STYLE = {
 };
 function StatusBadge({ status }) {
   const s = STATUS_STYLE[status] || STATUS_STYLE.draft;
-  return (
-    <span style={{ background:s.bg, color:s.color, padding:'2px 10px', borderRadius:20, fontSize:11, fontWeight:700 }}>
-      {s.label}
-    </span>
-  );
+  return <span style={{ background:s.bg, color:s.color, padding:'2px 10px', borderRadius:20, fontSize:11, fontWeight:700 }}>{s.label}</span>;
 }
 
-// ── Printable quotation layout ────────────────────────────────────
+// ── PDF-style Quotation Print Layout (matches uploaded design) ─────
 function QuotationPrint({ quoteNum, quoteDate, validDays, custName, custPhone, custAddress,
-                          eventType, pax, cart, subtotal, totalGst, discountAmt,
+                          custEmail, eventType, pax, cart, subtotal, totalGst, discountAmt,
                           finalTotal, perPax, notes, settings }) {
+  const purple = '#7c3aed';
+  const lightPurple = '#f5f0ff';
+
   return (
-    <div style={{ fontFamily:"'Segoe UI',Arial,sans-serif", fontSize:13, color:'#1a1a1a', maxWidth:680, margin:'0 auto' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24, paddingBottom:20, borderBottom:'2px solid #f97316' }}>
+    <div style={{ fontFamily:"'Segoe UI',Arial,sans-serif", fontSize:13, color:'#1a1a1a', maxWidth:700, margin:'0 auto', background:'#fff', padding:'32px 36px' }}>
+
+      {/* Footer note at top like PDF */}
+      <div style={{ fontSize:10, color:'#999', textAlign:'center', marginBottom:16 }}>
+        This is an electronically generated document, no signature is required.
+      </div>
+
+      {/* Header: Title + Logo */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:24 }}>
         <div>
-          <div style={{ fontSize:22, fontWeight:800, color:'#f97316' }}>{settings.restaurant_name || 'Restaurant'}</div>
-          {settings.address && <div style={{ fontSize:12, color:'#666', marginTop:2 }}>{settings.address}</div>}
-          {settings.phone && <div style={{ fontSize:12, color:'#666' }}>📞 {settings.phone}</div>}
-          {settings.gst_number && <div style={{ fontSize:12, color:'#666' }}>GST: {settings.gst_number}</div>}
+          <div style={{ fontSize:32, fontWeight:800, color:purple, marginBottom:16 }}>Quotation</div>
+          <table style={{ borderCollapse:'collapse', fontSize:13 }}>
+            <tbody>
+              <tr>
+                <td style={{ color:'#888', paddingRight:24, paddingBottom:6, whiteSpace:'nowrap' }}>Quotation No #</td>
+                <td style={{ fontWeight:700, paddingBottom:6 }}>{quoteNum}</td>
+              </tr>
+              <tr>
+                <td style={{ color:'#888', paddingRight:24, paddingBottom:6 }}>Quotation Date</td>
+                <td style={{ fontWeight:700, paddingBottom:6 }}>{fmtDate(quoteDate)}</td>
+              </tr>
+              <tr>
+                <td style={{ color:'#888', paddingRight:24 }}>Valid Till Date</td>
+                <td style={{ fontWeight:700 }}>{addDays(quoteDate, validDays)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+        {/* Logo or restaurant name as styled badge */}
         <div style={{ textAlign:'right' }}>
-          <div style={{ fontSize:20, fontWeight:800, color:'#f97316' }}>QUOTATION</div>
-          <div style={{ fontSize:13, fontWeight:700, marginTop:4 }}>{quoteNum}</div>
-          <div style={{ fontSize:12, color:'#666', marginTop:2 }}>Date: {fmtDate(quoteDate)}</div>
-          <div style={{ fontSize:12, color:'#e84a5f', fontWeight:700 }}>Valid Till: {addDays(quoteDate, validDays)}</div>
+          {settings.logo_url
+            ? <img src={settings.logo_url} alt="logo" style={{ maxHeight:80, maxWidth:160, objectFit:'contain' }} />
+            : (
+              <div style={{ background:purple, borderRadius:12, padding:'14px 20px', textAlign:'center', minWidth:120 }}>
+                <div style={{ color:'#fff', fontWeight:900, fontSize:18, letterSpacing:1 }}>{settings.restaurant_name || 'Restaurant'}</div>
+                {settings.tagline && <div style={{ color:'rgba(255,255,255,.7)', fontSize:10, marginTop:4 }}>{settings.tagline}</div>}
+              </div>
+            )
+          }
         </div>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-        <div style={{ background:'#fafafa', borderRadius:8, padding:'12px 16px' }}>
-          <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', color:'#999', marginBottom:8 }}>Prepared For</div>
-          {custName   && <div style={{ fontWeight:700, fontSize:15 }}>{custName}</div>}
-          {custPhone  && <div style={{ fontSize:12, color:'#666', marginTop:2 }}>📞 {custPhone}</div>}
-          {custAddress&& <div style={{ fontSize:12, color:'#666', marginTop:2 }}>📍 {custAddress}</div>}
-          {!custName && !custPhone && <div style={{ color:'#ccc', fontSize:12 }}>—</div>}
+      {/* From / For boxes */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:28 }}>
+        {/* Quotation From */}
+        <div style={{ background:lightPurple, borderRadius:8, padding:'16px 18px' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:purple, marginBottom:10 }}>Quotation From</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:6 }}>{settings.restaurant_name || 'Restaurant'}</div>
+          {settings.address && <div style={{ fontSize:12, color:'#555', lineHeight:1.6 }}>{settings.address}</div>}
+          {settings.email && <div style={{ fontSize:12, color:'#555', marginTop:4 }}><strong>Email:</strong> {settings.email}</div>}
+          {settings.phone && <div style={{ fontSize:12, color:'#555' }}><strong>Phone:</strong> {settings.phone}</div>}
+          {settings.gst_number && <div style={{ fontSize:12, color:'#555' }}><strong>GST:</strong> {settings.gst_number}</div>}
         </div>
-        <div style={{ background:'#fafafa', borderRadius:8, padding:'12px 16px' }}>
-          <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', color:'#999', marginBottom:8 }}>Event Details</div>
-          {eventType && <div style={{ fontWeight:700 }}>{eventType}</div>}
-          {pax       && <div style={{ fontSize:12, color:'#666', marginTop:2 }}>👥 {pax} Guests</div>}
-          {!eventType && !pax && <div style={{ color:'#ccc', fontSize:12 }}>—</div>}
+
+        {/* Quotation For */}
+        <div style={{ background:lightPurple, borderRadius:8, padding:'16px 18px' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:purple, marginBottom:10 }}>Quotation For</div>
+          {custName    && <div style={{ fontWeight:700, fontSize:14, marginBottom:6 }}>{custName}</div>}
+          {custAddress && <div style={{ fontSize:12, color:'#555', lineHeight:1.6 }}>{custAddress}</div>}
+          {custPhone   && <div style={{ fontSize:12, color:'#555', marginTop:4 }}><strong>Phone:</strong> {custPhone}</div>}
+          {custEmail   && <div style={{ fontSize:12, color:'#555' }}><strong>Email:</strong> {custEmail}</div>}
+          {eventType   && <div style={{ fontSize:12, color:'#555', marginTop:4 }}><strong>Event:</strong> {eventType}</div>}
+          {pax         && <div style={{ fontSize:12, color:'#555' }}><strong>Guests:</strong> {pax}</div>}
+          {!custName && !custAddress && <div style={{ fontSize:12, color:'#bbb' }}>—</div>}
         </div>
       </div>
 
-      <table style={{ width:'100%', borderCollapse:'collapse', marginBottom:16 }}>
+      {/* Items table */}
+      <table style={{ width:'100%', borderCollapse:'collapse', marginBottom:20 }}>
         <thead>
-          <tr style={{ background:'#f97316' }}>
-            {['#','Item','Qty','Rate','Amount'].map((h,i) => (
-              <th key={h} style={{ padding:'9px 12px', textAlign:i>1?'right':'left', color:'#fff', fontSize:11, textTransform:'uppercase', fontWeight:700 }}>{h}</th>
-            ))}
+          <tr style={{ background:purple }}>
+            <th style={{ padding:'10px 14px', textAlign:'left',  color:'#fff', fontSize:12, fontWeight:700, width:36 }}></th>
+            <th style={{ padding:'10px 14px', textAlign:'left',  color:'#fff', fontSize:12, fontWeight:700 }}>Item</th>
+            <th style={{ padding:'10px 14px', textAlign:'right', color:'#fff', fontSize:12, fontWeight:700, width:80 }}>Quantity</th>
+            <th style={{ padding:'10px 14px', textAlign:'right', color:'#fff', fontSize:12, fontWeight:700, width:90 }}>Rate</th>
+            <th style={{ padding:'10px 14px', textAlign:'right', color:'#fff', fontSize:12, fontWeight:700, width:110 }}>Amount</th>
           </tr>
         </thead>
         <tbody>
-          {cart.map((item,i) => (
-            <tr key={item.menu_item_id||i} style={{ borderBottom:'1px solid #eee', background:i%2===0?'#fff':'#fafafa' }}>
-              <td style={{ padding:'8px 12px', color:'#999', fontSize:12 }}>{i+1}</td>
-              <td style={{ padding:'8px 12px' }}>
-                <div style={{ fontWeight:600 }}>{item.name||item.item_name}</div>
-                {item.notes && <div style={{ fontSize:11, color:'#999' }}>{item.notes}</div>}
-                {(item.gst_pct||item.gst_percent||0) > 0 && <div style={{ fontSize:10, color:'#f97316' }}>+{item.gst_pct||item.gst_percent}% GST</div>}
+          {cart.map((item, i) => (
+            <tr key={item.menu_item_id||i} style={{ borderBottom:'1px solid #eee' }}>
+              <td style={{ padding:'10px 14px', color:'#999', fontSize:12, verticalAlign:'top' }}>{i+1}.</td>
+              <td style={{ padding:'10px 14px', verticalAlign:'top' }}>
+                <div style={{ fontWeight:600, fontSize:13 }}>{item.name||item.item_name}</div>
+                {item.notes && (
+                  <div style={{ marginTop:4 }}>
+                    {item.notes.split('\n').map((line, j) => (
+                      <div key={j} style={{ fontSize:12, color:'#666', paddingLeft:8 }}>{line}</div>
+                    ))}
+                  </div>
+                )}
+                {(item.gst_pct||item.gst_percent||0) > 0 &&
+                  <div style={{ fontSize:11, color:purple, marginTop:2 }}>+{item.gst_pct||item.gst_percent}% GST</div>}
               </td>
-              <td style={{ padding:'8px 12px', textAlign:'right' }}>{item.qty||item.quantity}</td>
-              <td style={{ padding:'8px 12px', textAlign:'right', color:'#666' }}>{fmtCur(item.price||item.unit_price)}</td>
-              <td style={{ padding:'8px 12px', textAlign:'right', fontWeight:700 }}>{fmtCur((item.price||item.unit_price)*(item.qty||item.quantity))}</td>
+              <td style={{ padding:'10px 14px', textAlign:'right', verticalAlign:'top', fontSize:13 }}>{item.qty||item.quantity}</td>
+              <td style={{ padding:'10px 14px', textAlign:'right', verticalAlign:'top', color:'#555', fontSize:13 }}>₹{parseFloat(item.price||item.unit_price).toLocaleString('en-IN')}</td>
+              <td style={{ padding:'10px 14px', textAlign:'right', verticalAlign:'top', fontWeight:600, fontSize:13 }}>₹{((item.price||item.unit_price)*(item.qty||item.quantity)).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:20 }}>
-        <div style={{ minWidth:260 }}>
-          {[
-            ['Subtotal', subtotal, '#1a1a1a'],
-            totalGst > 0    && ['GST',      totalGst,    '#666'],
-            discountAmt > 0 && ['Discount', -discountAmt,'#e84a5f'],
-          ].filter(Boolean).map(([l,v,c]) => (
-            <div key={l} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13, color:c }}>
-              <span>{l}</span><span>{v < 0 ? '−' : ''}{fmtCur(Math.abs(v))}</span>
-            </div>
-          ))}
-          <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 6px', fontSize:16, fontWeight:800, borderTop:'2px solid #f97316', marginTop:6, color:'#f97316' }}>
-            <span>Grand Total</span><span>{fmtCur(finalTotal)}</span>
-          </div>
-          {pax > 0 && <div style={{ textAlign:'right', fontSize:12, color:'#666' }}>Per person ({pax} pax): <strong>{fmtCur(perPax)}</strong></div>}
-        </div>
+      {/* Totals — right aligned like PDF */}
+      <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:24 }}>
+        <table style={{ borderCollapse:'collapse', minWidth:280 }}>
+          <tbody>
+            {subtotal !== finalTotal && (
+              <tr>
+                <td style={{ padding:'5px 14px', color:'#666', fontSize:13 }}>Subtotal</td>
+                <td style={{ padding:'5px 14px', textAlign:'right', fontSize:13 }}>₹{subtotal.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+              </tr>
+            )}
+            {totalGst > 0 && (
+              <tr>
+                <td style={{ padding:'5px 14px', color:'#666', fontSize:13 }}>GST</td>
+                <td style={{ padding:'5px 14px', textAlign:'right', fontSize:13 }}>₹{totalGst.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+              </tr>
+            )}
+            {discountAmt > 0 && (
+              <tr>
+                <td style={{ padding:'5px 14px', color:'#e84a5f', fontSize:13 }}>Discount</td>
+                <td style={{ padding:'5px 14px', textAlign:'right', color:'#e84a5f', fontSize:13 }}>−₹{discountAmt.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+              </tr>
+            )}
+            <tr style={{ borderTop:'2px solid #1a1a1a' }}>
+              <td style={{ padding:'10px 14px', fontWeight:800, fontSize:15 }}>Total (INR)</td>
+              <td style={{ padding:'10px 14px', textAlign:'right', fontWeight:800, fontSize:15 }}>₹{finalTotal.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+            </tr>
+            {pax > 0 && (
+              <tr>
+                <td style={{ padding:'4px 14px', color:'#888', fontSize:12 }}>Per person ({pax} pax)</td>
+                <td style={{ padding:'4px 14px', textAlign:'right', color:'#888', fontSize:12 }}>₹{perPax.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
+      {/* Terms / Notes */}
       {notes && (
-        <div style={{ background:'#fff8f0', border:'1px solid #f97316', borderRadius:8, padding:'12px 16px', marginBottom:16 }}>
-          <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', color:'#f97316', marginBottom:6 }}>Terms & Notes</div>
-          <div style={{ fontSize:12, color:'#444', lineHeight:1.6, whiteSpace:'pre-wrap' }}>{notes}</div>
+        <div style={{ borderTop:'1px solid #eee', paddingTop:16, marginBottom:16 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'#555', marginBottom:6 }}>Terms & Notes</div>
+          <div style={{ fontSize:12, color:'#666', lineHeight:1.7, whiteSpace:'pre-wrap' }}>{notes}</div>
         </div>
       )}
-      <div style={{ textAlign:'center', fontSize:11, color:'#999', borderTop:'1px solid #eee', paddingTop:12 }}>
-        Computer-generated quotation. • {settings.restaurant_name || 'Restaurant'}
+
+      {/* Footer */}
+      <div style={{ borderTop:'1px solid #eee', paddingTop:12, textAlign:'center', fontSize:10, color:'#999', marginTop:8 }}>
+        This is an electronically generated document, no signature is required.
       </div>
     </div>
   );
 }
 
 function blankForm() {
-  return { custName:'', custPhone:'', custAddress:'', eventType:'', pax:'',
+  return { custName:'', custPhone:'', custEmail:'', custAddress:'', eventType:'', pax:'',
            quoteDate:todayStr(), validDays:'7', notes:'', discType:'none', discVal:'' };
 }
 
@@ -149,8 +214,9 @@ export default function QuotationPage() {
   const [listSearch,    setListSearch]    = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
 
-  // 'list' | 'new'
-  const [mode, setMode] = useState('list');
+  // 'list' | 'new' | 'edit'
+  const [mode,      setMode]      = useState('list');
+  const [editingId, setEditingId] = useState(null);
 
   const [form,   setForm]   = useState(blankForm);
   const [cart,   setCart]   = useState([]);
@@ -161,7 +227,7 @@ export default function QuotationPage() {
   // null | '__builder__' | quotation-object
   const [previewQuote, setPreviewQuote] = useState(null);
 
-  // ── Load ──────────────────────────────────────────────
+  // ── Load ───────────────────────────────────────────────
   const loadMaster = useCallback(async () => {
     setLoadingMaster(true);
     try {
@@ -177,13 +243,15 @@ export default function QuotationPage() {
     try {
       const r = await getQuotations();
       if (r.success) setQuotations(r.data);
-    } catch { toast('Failed to load quotations', 'er'); }
-    finally { setLoadingList(false); }
+      else toast(r.message || 'Failed to load quotations', 'er');
+    } catch(err) {
+      toast(err?.response?.data?.message || err?.message || 'Failed to load quotations', 'er');
+    } finally { setLoadingList(false); }
   }, []);
 
   useEffect(() => { loadMaster(); loadList(); }, [loadMaster, loadList]);
 
-  // ── Cart ──────────────────────────────────────────────
+  // ── Cart ───────────────────────────────────────────────
   const addToCart = (item) => {
     setCart(prev => {
       const idx = prev.findIndex(c => c.menu_item_id === item.id);
@@ -226,6 +294,41 @@ export default function QuotationPage() {
     );
   }, [quotations, listSearch]);
 
+  // ── Open Edit ──────────────────────────────────────────
+  const openEdit = async (q) => {
+    try {
+      const r = await getQuotation(q.id);
+      if (!r.success) { toast('Failed to load quotation', 'er'); return; }
+      const full = r.data;
+      setForm({
+        custName:    full.customer_name    || '',
+        custPhone:   full.customer_phone   || '',
+        custEmail:   full.customer_email   || '',
+        custAddress: full.customer_address || '',
+        eventType:   '',
+        pax:         '',
+        quoteDate:   full.date || todayStr(),
+        validDays:   '7',
+        notes:       full.notes || '',
+        discType:    full.discount_type  || 'none',
+        discVal:     full.discount_value || '',
+      });
+      setCart((full.items||[]).map(i => ({
+        menu_item_id: i.menu_item_id || i.id,
+        name:         i.item_name,
+        price:        parseFloat(i.unit_price),
+        gst_pct:      parseFloat(i.gst_percent)||0,
+        qty:          i.quantity,
+        notes:        i.notes || '',
+        is_veg:       true,
+      })));
+      setEditingId(full.id);
+      setMode('edit');
+    } catch(err) {
+      toast(err?.response?.data?.message || 'Failed to load', 'er');
+    }
+  };
+
   // ── Save ───────────────────────────────────────────────
   const saveQuotation = async () => {
     if (!cart.length)          { toast('Add at least one item', 'er'); return; }
@@ -237,17 +340,17 @@ export default function QuotationPage() {
         d.setDate(d.getDate() + parseInt(form.validDays||7));
         return d.toISOString().slice(0,10);
       })();
-      const noteParts = [
-        form.eventType && `Event: ${form.eventType}`,
-        form.pax       && `Pax: ${form.pax}`,
-        form.notes,
-      ].filter(Boolean);
-      const r = await createQuotation({
+      const payload = {
         customer_name:    form.custName.trim(),
-        customer_phone:   form.custPhone  || null,
-        customer_address: form.custAddress|| null,
-        notes:       noteParts.join('\n') || null,
-        valid_until: validUntilDate,
+        customer_phone:   form.custPhone   || null,
+        customer_email:   form.custEmail   || null,
+        customer_address: form.custAddress || null,
+        notes: [
+          form.eventType && `Event: ${form.eventType}`,
+          form.pax       && `Pax: ${form.pax}`,
+          form.notes,
+        ].filter(Boolean).join('\n') || null,
+        valid_until:   validUntilDate,
         discount_type:  form.discType !== 'none' ? form.discType : null,
         discount_value: parseFloat(form.discVal) || 0,
         items: cart.map(c => ({
@@ -258,19 +361,40 @@ export default function QuotationPage() {
           gst_percent:  c.gst_pct,
           notes:        c.notes || null,
         })),
-      });
+      };
+
+      let r;
+      if (mode === 'edit' && editingId) {
+        r = await updateQuotation(editingId, payload);
+        if (r.success) toast('Quotation updated! ✅', 'ok');
+      } else {
+        r = await createQuotation(payload);
+        if (r.success) toast(`${r.data.quotation_number} saved! ✅`, 'ok');
+      }
+
       if (r.success) {
-        toast(`${r.data.quotation_number} saved! ✅`, 'ok');
         await loadList();
         setMode('list');
         setCart([]);
         setForm(blankForm());
+        setEditingId(null);
       } else {
         toast(r.message || 'Failed to save', 'er');
       }
     } catch(err) {
       toast(err?.response?.data?.message || 'Error saving', 'er');
     } finally { setSaving(false); }
+  };
+
+  // ── Preview saved quote (fetch full record with items) ─
+  const openPreview = async (q) => {
+    try {
+      const r = await getQuotation(q.id);
+      if (!r.success) { toast('Failed to load quotation', 'er'); return; }
+      setPreviewQuote(r.data);
+    } catch(err) {
+      toast(err?.response?.data?.message || 'Failed to load', 'er');
+    }
   };
 
   // ── Delete ─────────────────────────────────────────────
@@ -284,80 +408,151 @@ export default function QuotationPage() {
   };
 
   // ── Print ──────────────────────────────────────────────
-  const doPrint = (savedQ) => {
-    const html = savedQ ? null : printRef.current?.innerHTML;
-    const printStyles = `body{margin:0;font-family:'Segoe UI',Arial,sans-serif;color:#1a1a1a;background:#fff}
-      @media print{@page{margin:15mm}}table{width:100%;border-collapse:collapse}
-      th,td{padding:8px 12px}thead th{background:#f97316;color:#fff;font-size:11px;text-transform:uppercase}
-      tbody tr:nth-child(even){background:#fafafa}tbody tr td{border-bottom:1px solid #eee;font-size:13px}`;
+  const buildPrintHtml = (props) => {
+    const { quoteNum, quoteDate, validDays, custName, custPhone, custEmail, custAddress,
+            eventType, pax, cart: c, subtotal: sub, totalGst: gst, discountAmt: disc,
+            finalTotal: tot, perPax: pp, notes, settings: s } = props;
+    const purple = '#7c3aed';
+    const lightPurple = '#f5f0ff';
+    const validTill = addDays(quoteDate, validDays);
+    const rows = c.map((item, i) => `
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:10px 14px;color:#999;font-size:12px;vertical-align:top">${i+1}.</td>
+        <td style="padding:10px 14px;vertical-align:top">
+          <div style="font-weight:600;font-size:13px">${item.name||item.item_name}</div>
+          ${item.notes ? item.notes.split('\n').map(l=>`<div style="font-size:12px;color:#666;padding-left:8px">${l}</div>`).join('') : ''}
+          ${(item.gst_pct||item.gst_percent||0)>0 ? `<div style="font-size:11px;color:${purple};margin-top:2px">+${item.gst_pct||item.gst_percent}% GST</div>` : ''}
+        </td>
+        <td style="padding:10px 14px;text-align:right;vertical-align:top;font-size:13px">${item.qty||item.quantity}</td>
+        <td style="padding:10px 14px;text-align:right;vertical-align:top;color:#555;font-size:13px">₹${parseFloat(item.price||item.unit_price).toLocaleString('en-IN')}</td>
+        <td style="padding:10px 14px;text-align:right;vertical-align:top;font-weight:600;font-size:13px">₹${((item.price||item.unit_price)*(item.qty||item.quantity)).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      </tr>`).join('');
 
-    const win = window.open('', '_blank', 'width=800,height=900');
-    if (!win) { toast('Allow popups to print', 'er'); return; }
+    const subtotalRow = sub !== tot ? `<tr><td style="padding:5px 14px;color:#666;font-size:13px">Subtotal</td><td style="padding:5px 14px;text-align:right;font-size:13px">₹${sub.toLocaleString('en-IN',{minimumFractionDigits:2})}</td></tr>` : '';
+    const gstRow = gst>0 ? `<tr><td style="padding:5px 14px;color:#666;font-size:13px">GST</td><td style="padding:5px 14px;text-align:right;font-size:13px">₹${gst.toLocaleString('en-IN',{minimumFractionDigits:2})}</td></tr>` : '';
+    const discRow = disc>0 ? `<tr><td style="padding:5px 14px;color:#e84a5f;font-size:13px">Discount</td><td style="padding:5px 14px;text-align:right;color:#e84a5f;font-size:13px">−₹${disc.toLocaleString('en-IN',{minimumFractionDigits:2})}</td></tr>` : '';
+    const paxRow = pp>0 ? `<tr><td style="padding:4px 14px;color:#888;font-size:12px">Per person (${pax} pax)</td><td style="padding:4px 14px;text-align:right;color:#888;font-size:12px">₹${pp.toLocaleString('en-IN',{minimumFractionDigits:2})}</td></tr>` : '';
 
-    if (savedQ) {
-      // Build print HTML from saved quote data
-      const q = savedQ;
-      const rows = (q.items||[]).map((item,i) =>
-        `<tr style="background:${i%2===0?'#fff':'#fafafa'}">
-          <td style="padding:8px 12px;color:#999">${i+1}</td>
-          <td style="padding:8px 12px"><strong>${item.item_name}</strong>${item.notes?`<br><small style="color:#999">${item.notes}</small>`:''}</td>
-          <td style="padding:8px 12px;text-align:right">${item.quantity}</td>
-          <td style="padding:8px 12px;text-align:right;color:#666">₹${parseFloat(item.unit_price).toFixed(0)}</td>
-          <td style="padding:8px 12px;text-align:right;font-weight:700">₹${(parseFloat(item.unit_price)*item.quantity).toFixed(0)}</td>
-        </tr>`).join('');
-      const sub = parseFloat(q.subtotal)||0;
-      const gst = parseFloat(q.gst_amount)||0;
-      const disc= parseFloat(q.discount_amount)||0;
-      const tot = parseFloat(q.total_amount)||0;
-      win.document.write(`<html><head><title>${q.quotation_number}</title><style>${printStyles}</style></head><body>
-        <div style="max-width:680px;margin:0 auto;padding:20px;font-family:'Segoe UI',Arial,sans-serif;color:#1a1a1a">
-          <div style="display:flex;justify-content:space-between;padding-bottom:20px;border-bottom:2px solid #f97316;margin-bottom:24px">
-            <div><div style="font-size:22px;font-weight:800;color:#f97316">${settings.restaurant_name||'Restaurant'}</div>
-              ${settings.address?`<div style="font-size:12px;color:#666">${settings.address}</div>`:''}
-              ${settings.phone?`<div style="font-size:12px;color:#666">📞 ${settings.phone}</div>`:''}
-            </div>
-            <div style="text-align:right">
-              <div style="font-size:20px;font-weight:800;color:#f97316">QUOTATION</div>
-              <div style="font-weight:700;margin-top:4px">${q.quotation_number}</div>
-              <div style="font-size:12px;color:#666">Date: ${fmtDate(q.date||q.created_at)}</div>
-              <div style="font-size:12px;color:#e84a5f;font-weight:700">Valid Till: ${fmtDate(q.valid_until||q.valid_until_fmt)}</div>
-            </div>
+    return `
+      <div style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px;margin:0 auto;background:#fff;padding:32px 36px">
+        <div style="font-size:10px;color:#999;text-align:center;margin-bottom:16px">This is an electronically generated document, no signature is required.</div>
+
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px">
+          <div>
+            <div style="font-size:32px;font-weight:800;color:${purple};margin-bottom:16px">Quotation</div>
+            <table style="border-collapse:collapse;font-size:13px">
+              <tr><td style="color:#888;padding-right:24px;padding-bottom:6px">Quotation No #</td><td style="font-weight:700;padding-bottom:6px">${quoteNum}</td></tr>
+              <tr><td style="color:#888;padding-right:24px;padding-bottom:6px">Quotation Date</td><td style="font-weight:700;padding-bottom:6px">${fmtDate(quoteDate)}</td></tr>
+              <tr><td style="color:#888;padding-right:24px">Valid Till Date</td><td style="font-weight:700">${validTill}</td></tr>
+            </table>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-            <div style="background:#fafafa;border-radius:8px;padding:12px 16px">
-              <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#999;margin-bottom:8px">Prepared For</div>
-              ${q.customer_name?`<div style="font-weight:700;font-size:15px">${q.customer_name}</div>`:''}
-              ${q.customer_phone?`<div style="font-size:12px;color:#666">📞 ${q.customer_phone}</div>`:''}
-              ${q.customer_address?`<div style="font-size:12px;color:#666">📍 ${q.customer_address}</div>`:''}
-            </div>
-            <div style="background:#fafafa;border-radius:8px;padding:12px 16px">
-              <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#999;margin-bottom:8px">Notes</div>
-              <div style="font-size:12px;color:#444">${q.notes||'—'}</div>
-            </div>
+          <div style="background:${purple};border-radius:12px;padding:14px 20px;text-align:center;min-width:120px">
+            <div style="color:#fff;font-weight:900;font-size:18px;letter-spacing:1px">${s.restaurant_name||'Restaurant'}</div>
+            ${s.tagline ? `<div style="color:rgba(255,255,255,.7);font-size:10px;margin-top:4px">${s.tagline}</div>` : ''}
           </div>
-          <table><thead><tr style="background:#f97316">${['#','Item','Qty','Rate','Amount'].map((h,i)=>`<th style="padding:9px 12px;text-align:${i>1?'right':'left'};color:#fff;font-size:11px;text-transform:uppercase">${h}</th>`).join('')}</tr></thead>
-          <tbody>${rows}</tbody></table>
-          <div style="display:flex;justify-content:flex-end;margin:16px 0">
-            <div style="min-width:260px">
-              <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>Subtotal</span><span>₹${sub.toFixed(0)}</span></div>
-              ${gst>0?`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;color:#666"><span>GST</span><span>₹${gst.toFixed(0)}</span></div>`:''}
-              ${disc>0?`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;color:#e84a5f"><span>Discount</span><span>−₹${disc.toFixed(0)}</span></div>`:''}
-              <div style="display:flex;justify-content:space-between;padding:10px 0 6px;font-size:16px;font-weight:800;border-top:2px solid #f97316;margin-top:6px;color:#f97316"><span>Grand Total</span><span>₹${tot.toFixed(0)}</span></div>
-            </div>
-          </div>
-          ${q.notes?`<div style="background:#fff8f0;border:1px solid #f97316;border-radius:8px;padding:12px 16px;margin-bottom:16px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#f97316;margin-bottom:6px">Terms & Notes</div><div style="font-size:12px;color:#444;white-space:pre-wrap">${q.notes}</div></div>`:''}
-          <div style="text-align:center;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:12px">Computer-generated quotation. • ${settings.restaurant_name||'Restaurant'}</div>
         </div>
-        <script>window.onload=()=>{window.print();window.close()}<\/script></body></html>`);
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:28px">
+          <div style="background:${lightPurple};border-radius:8px;padding:16px 18px">
+            <div style="font-size:13px;font-weight:700;color:${purple};margin-bottom:10px">Quotation From</div>
+            <div style="font-weight:700;font-size:14px;margin-bottom:6px">${s.restaurant_name||'Restaurant'}</div>
+            ${s.address ? `<div style="font-size:12px;color:#555;line-height:1.6">${s.address}</div>` : ''}
+            ${s.email   ? `<div style="font-size:12px;color:#555;margin-top:4px"><strong>Email:</strong> ${s.email}</div>` : ''}
+            ${s.phone   ? `<div style="font-size:12px;color:#555"><strong>Phone:</strong> ${s.phone}</div>` : ''}
+            ${s.gst_number ? `<div style="font-size:12px;color:#555"><strong>GST:</strong> ${s.gst_number}</div>` : ''}
+          </div>
+          <div style="background:${lightPurple};border-radius:8px;padding:16px 18px">
+            <div style="font-size:13px;font-weight:700;color:${purple};margin-bottom:10px">Quotation For</div>
+            ${custName    ? `<div style="font-weight:700;font-size:14px;margin-bottom:6px">${custName}</div>` : ''}
+            ${custAddress ? `<div style="font-size:12px;color:#555;line-height:1.6">${custAddress}</div>` : ''}
+            ${custPhone   ? `<div style="font-size:12px;color:#555;margin-top:4px"><strong>Phone:</strong> ${custPhone}</div>` : ''}
+            ${custEmail   ? `<div style="font-size:12px;color:#555"><strong>Email:</strong> ${custEmail}</div>` : ''}
+            ${eventType   ? `<div style="font-size:12px;color:#555;margin-top:4px"><strong>Event:</strong> ${eventType}</div>` : ''}
+            ${pax         ? `<div style="font-size:12px;color:#555"><strong>Guests:</strong> ${pax}</div>` : ''}
+          </div>
+        </div>
+
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+          <thead>
+            <tr style="background:${purple}">
+              <th style="padding:10px 14px;text-align:left;color:#fff;font-size:12px;font-weight:700;width:36px"></th>
+              <th style="padding:10px 14px;text-align:left;color:#fff;font-size:12px;font-weight:700">Item</th>
+              <th style="padding:10px 14px;text-align:right;color:#fff;font-size:12px;font-weight:700;width:80px">Quantity</th>
+              <th style="padding:10px 14px;text-align:right;color:#fff;font-size:12px;font-weight:700;width:90px">Rate</th>
+              <th style="padding:10px 14px;text-align:right;color:#fff;font-size:12px;font-weight:700;width:110px">Amount</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+
+        <div style="display:flex;justify-content:flex-end;margin-bottom:24px">
+          <table style="border-collapse:collapse;min-width:280px">
+            <tbody>
+              ${subtotalRow}${gstRow}${discRow}
+              <tr style="border-top:2px solid #1a1a1a">
+                <td style="padding:10px 14px;font-weight:800;font-size:15px">Total (INR)</td>
+                <td style="padding:10px 14px;text-align:right;font-weight:800;font-size:15px">₹${tot.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
+              </tr>
+              ${paxRow}
+            </tbody>
+          </table>
+        </div>
+
+        ${notes ? `<div style="border-top:1px solid #eee;padding-top:16px;margin-bottom:16px"><div style="font-size:12px;font-weight:700;color:#555;margin-bottom:6px">Terms &amp; Notes</div><div style="font-size:12px;color:#666;line-height:1.7;white-space:pre-wrap">${notes}</div></div>` : ''}
+
+        <div style="border-top:1px solid #eee;padding-top:12px;text-align:center;font-size:10px;color:#999;margin-top:8px">
+          This is an electronically generated document, no signature is required.
+        </div>
+      </div>`;
+  };
+
+  const doPrint = (savedQ) => {
+    const win = window.open('', '_blank', 'width=800,height:1000');
+    if (!win) { toast('Allow popups to print', 'er'); return; }
+    let html;
+    if (savedQ && savedQ !== '__builder__') {
+      html = buildPrintHtml({
+        quoteNum:    savedQ.quotation_number,
+        quoteDate:   savedQ.date || savedQ.created_at?.slice(0,10),
+        validDays:   7,
+        custName:    savedQ.customer_name,
+        custPhone:   savedQ.customer_phone,
+        custEmail:   savedQ.customer_email,
+        custAddress: savedQ.customer_address,
+        eventType:   null, pax: null,
+        cart: (savedQ.items||[]).map(i => ({
+          menu_item_id: i.menu_item_id, name: i.item_name,
+          price: parseFloat(i.unit_price), gst_pct: parseFloat(i.gst_percent)||0,
+          qty: i.quantity, notes: i.notes,
+        })),
+        subtotal:    parseFloat(savedQ.subtotal)||0,
+        totalGst:    parseFloat(savedQ.gst_amount)||0,
+        discountAmt: parseFloat(savedQ.discount_amount)||0,
+        finalTotal:  parseFloat(savedQ.total_amount)||0,
+        perPax: 0, notes: savedQ.notes, settings,
+      });
     } else {
-      win.document.write(`<html><head><title>Quotation</title><style>${printStyles}</style></head><body>${html}<script>window.onload=()=>{window.print();window.close()}<\/script></body></html>`);
+      html = buildPrintHtml({
+        quoteNum: 'QT-PREVIEW', quoteDate: form.quoteDate, validDays: form.validDays,
+        custName: form.custName, custPhone: form.custPhone, custEmail: form.custEmail,
+        custAddress: form.custAddress, eventType: form.eventType, pax: form.pax,
+        cart, subtotal, totalGst, discountAmt, finalTotal, perPax,
+        notes: form.notes, settings,
+      });
     }
+    win.document.write(`<!DOCTYPE html><html><head><title>Quotation</title>
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #fff; }
+        @media print { @page { margin: 10mm; size: A4; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+      </style>
+    </head><body>${html}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
     win.document.close();
   };
 
   const setF = (k,v) => setForm(prev => ({...prev,[k]:v}));
 
-  // ══════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════
   // LIST VIEW
   if (mode === 'list') return (
     <div>
@@ -366,7 +561,7 @@ export default function QuotationPage() {
           <div className="pt">📋 Quotations</div>
           <div className="ps">Create, manage and print customer quotations</div>
         </div>
-        <button className="btn-p" onClick={() => { setCart([]); setForm(blankForm()); setMode('new'); }}
+        <button className="btn-p" onClick={() => { setCart([]); setForm(blankForm()); setEditingId(null); setMode('new'); }}
           style={{ padding:'9px 20px', fontSize:14 }}>
           + New Quotation
         </button>
@@ -415,10 +610,14 @@ export default function QuotationPage() {
                     <td style={{ padding:'10px 14px', textAlign:'right', fontWeight:700 }}>{fmtCur(q.total_amount)}</td>
                     <td style={{ padding:'10px 14px' }}><StatusBadge status={q.status} /></td>
                     <td style={{ padding:'10px 14px' }}>
-                      <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
-                        <button onClick={() => setPreviewQuote(q)}
+                      <div style={{ display:'flex', gap:5, justifyContent:'flex-end' }}>
+                        <button onClick={() => openPreview(q)}
                           style={{ padding:'5px 10px', borderRadius:7, border:'1.5px solid var(--border)', background:'transparent', cursor:'pointer', fontSize:12, color:'var(--ink2)' }}>
-                          👁 View
+                          👁
+                        </button>
+                        <button onClick={() => openEdit(q)}
+                          style={{ padding:'5px 10px', borderRadius:7, border:'1.5px solid #a78bfa', background:'transparent', cursor:'pointer', fontSize:12, color:'#7c3aed' }}>
+                          ✏️ Edit
                         </button>
                         <button onClick={() => setDeleteConfirm(q.id)}
                           style={{ padding:'5px 10px', borderRadius:7, border:'1.5px solid #fbb', background:'transparent', cursor:'pointer', fontSize:12, color:'#e84a5f' }}>
@@ -453,74 +652,74 @@ export default function QuotationPage() {
         </div>
       )}
 
-      {/* View/print saved quote */}
+      {/* View saved quote modal */}
       {previewQuote && previewQuote !== '__builder__' && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}
           onClick={() => setPreviewQuote(null)}>
-          <div style={{ background:'#fff', borderRadius:16, maxWidth:720, width:'100%', maxHeight:'92vh', overflow:'auto', color:'#1a1a1a' }}
+          <div style={{ background:'#fff', borderRadius:16, maxWidth:760, width:'100%', maxHeight:'92vh', overflow:'auto', color:'#1a1a1a' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 20px', borderBottom:'1px solid #eee', position:'sticky', top:0, background:'#fff', zIndex:1 }}>
               <div style={{ fontWeight:800, fontSize:16 }}>{previewQuote.quotation_number}</div>
               <div style={{ display:'flex', gap:8 }}>
                 <button onClick={() => doPrint(previewQuote)}
-                  style={{ padding:'7px 16px', borderRadius:8, border:'none', background:'#f97316', color:'#fff', fontWeight:700, cursor:'pointer' }}>🖨 Print</button>
+                  style={{ padding:'7px 16px', borderRadius:8, border:'none', background:'#7c3aed', color:'#fff', fontWeight:700, cursor:'pointer' }}>🖨 Print</button>
                 <button onClick={() => setPreviewQuote(null)}
                   style={{ padding:'7px 14px', borderRadius:8, border:'1px solid #ccc', background:'transparent', cursor:'pointer' }}>✕</button>
               </div>
             </div>
-            <div style={{ padding:24 }}>
-              <QuotationPrint
-                quoteNum={previewQuote.quotation_number}
-                quoteDate={previewQuote.date||previewQuote.created_at?.slice(0,10)}
-                validDays={7}
-                custName={previewQuote.customer_name} custPhone={previewQuote.customer_phone}
-                custAddress={previewQuote.customer_address} eventType={null} pax={null}
-                cart={(previewQuote.items||[]).map(i => ({
-                  menu_item_id:i.menu_item_id, name:i.item_name,
-                  price:parseFloat(i.unit_price), gst_pct:parseFloat(i.gst_percent)||0,
-                  qty:i.quantity, notes:i.notes,
-                }))}
-                subtotal={parseFloat(previewQuote.subtotal)||0}
-                totalGst={parseFloat(previewQuote.gst_amount)||0}
-                discountAmt={parseFloat(previewQuote.discount_amount)||0}
-                finalTotal={parseFloat(previewQuote.total_amount)||0}
-                perPax={0} notes={previewQuote.notes} settings={settings}
-              />
-            </div>
+            <QuotationPrint
+              quoteNum={previewQuote.quotation_number}
+              quoteDate={previewQuote.date||previewQuote.created_at?.slice(0,10)}
+              validDays={7}
+              custName={previewQuote.customer_name} custPhone={previewQuote.customer_phone}
+              custEmail={previewQuote.customer_email} custAddress={previewQuote.customer_address}
+              eventType={null} pax={null}
+              cart={(previewQuote.items||[]).map(i => ({
+                menu_item_id:i.menu_item_id, name:i.item_name,
+                price:parseFloat(i.unit_price), gst_pct:parseFloat(i.gst_percent)||0,
+                qty:i.quantity, notes:i.notes,
+              }))}
+              subtotal={parseFloat(previewQuote.subtotal)||0}
+              totalGst={parseFloat(previewQuote.gst_amount)||0}
+              discountAmt={parseFloat(previewQuote.discount_amount)||0}
+              finalTotal={parseFloat(previewQuote.total_amount)||0}
+              perPax={0} notes={previewQuote.notes} settings={settings}
+            />
           </div>
         </div>
       )}
     </div>
   );
 
-  // ══════════════════════════════════════════════════════════════════
-  // NEW QUOTATION BUILDER
+  // ═══════════════════════════════════════════════════════
+  // NEW / EDIT BUILDER
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 56px)', overflow:'hidden' }}>
-
       {/* Top bar */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 16px', borderBottom:'1.5px solid var(--border)', background:'var(--surface)', flexShrink:0 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <button onClick={() => { setMode('list'); setCart([]); setForm(blankForm()); }}
+          <button onClick={() => { setMode('list'); setCart([]); setForm(blankForm()); setEditingId(null); }}
             style={{ padding:'6px 12px', borderRadius:8, border:'1.5px solid var(--border)', background:'transparent', cursor:'pointer', fontSize:12, color:'var(--ink2)' }}>
             ← Back
           </button>
-          <div style={{ fontWeight:800, fontSize:15 }}>📋 New Quotation</div>
+          <div style={{ fontWeight:800, fontSize:15 }}>
+            {mode==='edit' ? '✏️ Edit Quotation' : '📋 New Quotation'}
+          </div>
         </div>
         <div style={{ display:'flex', gap:8 }}>
           {cart.length > 0 && (
             <button onClick={() => setPreviewQuote('__builder__')}
-              style={{ padding:'7px 14px', borderRadius:9, border:'1.5px solid var(--accent)', background:'transparent', color:'var(--accent)', fontWeight:700, fontSize:13, cursor:'pointer' }}>
+              style={{ padding:'7px 14px', borderRadius:9, border:'1.5px solid #a78bfa', background:'transparent', color:'#7c3aed', fontWeight:700, fontSize:13, cursor:'pointer' }}>
               👁 Preview
             </button>
           )}
           <button onClick={saveQuotation} disabled={saving || !cart.length}
             style={{ padding:'7px 20px', borderRadius:9, border:'none', background:cart.length?'var(--accent)':'#ccc', color:'#fff', fontWeight:700, fontSize:13, cursor:cart.length?'pointer':'not-allowed' }}>
-            {saving ? '⏳ Saving…' : '💾 Save'}
+            {saving ? '⏳ Saving…' : mode==='edit' ? '💾 Update' : '💾 Save'}
           </button>
           {cart.length > 0 && (
             <button onClick={() => doPrint(null)}
-              style={{ padding:'7px 16px', borderRadius:9, border:'none', background:'#f97316', color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer' }}>
+              style={{ padding:'7px 16px', borderRadius:9, border:'none', background:'#7c3aed', color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer' }}>
               🖨 Print
             </button>
           )}
@@ -528,7 +727,6 @@ export default function QuotationPage() {
       </div>
 
       <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
-
         {/* LEFT: Menu grid */}
         <div style={{ flex:1, display:'flex', flexDirection:'column', borderRight:'1.5px solid var(--border)', overflow:'hidden' }}>
           <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)', background:'var(--surface)' }}>
@@ -560,19 +758,13 @@ export default function QuotationPage() {
                   const inCart = cart.find(c => c.menu_item_id===item.id);
                   return (
                     <div key={item.id} onClick={() => addToCart(item)}
-                      style={{ background:'var(--surface)', border:`1.5px solid ${inCart?'var(--accent)':'var(--border)'}`, borderRadius:12, padding:'10px 10px 8px', cursor:'pointer', position:'relative', transition:'border-color .12s' }}>
+                      style={{ background:'var(--surface)', border:`1.5px solid ${inCart?'var(--accent)':'var(--border)'}`, borderRadius:12, padding:'10px 10px 8px', cursor:'pointer', position:'relative' }}>
                       <div style={{ width:'100%', aspectRatio:'1', borderRadius:8, overflow:'hidden', marginBottom:6, background:'var(--bg)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-                        {item.image_url
-                          ? <img src={item.image_url} alt={item.name} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
-                          : <span style={{ fontSize:22 }}>🍽️</span>}
+                        {item.image_url ? <img src={item.image_url} alt={item.name} style={{ width:'100%', height:'100%', objectFit:'cover' }} /> : <span style={{ fontSize:22 }}>🍽️</span>}
                       </div>
                       <div style={{ fontSize:11, fontWeight:700, lineHeight:1.3, marginBottom:3 }}>{item.name}</div>
                       <div style={{ fontSize:11, color:'var(--accent)', fontWeight:800 }}>{fmtCur(item.selling_price)}</div>
-                      {inCart && (
-                        <div style={{ position:'absolute', top:5, right:5, background:'var(--accent)', color:'#fff', borderRadius:'50%', width:19, height:19, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800 }}>
-                          {inCart.qty}
-                        </div>
-                      )}
+                      {inCart && <div style={{ position:'absolute', top:5, right:5, background:'var(--accent)', color:'#fff', borderRadius:'50%', width:19, height:19, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800 }}>{inCart.qty}</div>}
                     </div>
                   );
                 })}
@@ -580,7 +772,7 @@ export default function QuotationPage() {
         </div>
 
         {/* RIGHT: Form */}
-        <div style={{ width:370, display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--surface)' }}>
+        <div style={{ width:380, display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--surface)' }}>
           <div style={{ flex:1, overflowY:'auto', padding:'12px 14px' }}>
 
             {/* Customer */}
@@ -589,7 +781,8 @@ export default function QuotationPage() {
               <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                 {[['Name *','custName','text','Customer / Company Name'],
                   ['Phone','custPhone','tel','10-digit mobile'],
-                  ['Address','custAddress','text','City / Address'],
+                  ['Email','custEmail','email','customer@email.com'],
+                  ['Address','custAddress','text','City / Full Address'],
                   ['Event Type','eventType','text','e.g. Wedding, Corporate'],
                   ['No. of Pax','pax','number','Number of guests']].map(([label,key,type,ph]) => (
                   <div key={key}>
@@ -619,11 +812,9 @@ export default function QuotationPage() {
               {form.quoteDate && <div style={{ fontSize:11, color:'var(--ink2)', marginTop:4 }}>Valid till: <strong>{addDays(form.quoteDate, form.validDays)}</strong></div>}
             </div>
 
-            {/* Cart items */}
+            {/* Cart */}
             <div style={{ marginBottom:14 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'var(--ink2)', textTransform:'uppercase', marginBottom:6 }}>
-                🍽️ Items {cart.length>0 && `(${cart.length})`}
-              </div>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--ink2)', textTransform:'uppercase', marginBottom:6 }}>🍽️ Items {cart.length>0&&`(${cart.length})`}</div>
               {cart.length===0
                 ? <div style={{ textAlign:'center', padding:'18px 0', color:'var(--ink2)', fontSize:13 }}>Tap menu items to add</div>
                 : cart.map(c => (
@@ -638,8 +829,8 @@ export default function QuotationPage() {
                       </div>
                       <span style={{ fontWeight:700,fontSize:12,minWidth:60,textAlign:'right' }}>{fmtCur(c.price*c.qty)}</span>
                     </div>
-                    <input placeholder="Item note…" value={c.notes} onChange={e => setItemNotes(c.menu_item_id,e.target.value)}
-                      style={{ width:'100%',padding:'4px 8px',borderRadius:5,border:'1px solid var(--border)',fontSize:11,background:'var(--surface)',color:'var(--ink2)',boxSizing:'border-box' }} />
+                    <textarea rows={2} placeholder="Item note / sub-items (one per line)…" value={c.notes} onChange={e => setItemNotes(c.menu_item_id,e.target.value)}
+                      style={{ width:'100%',padding:'4px 8px',borderRadius:5,border:'1px solid var(--border)',fontSize:11,background:'var(--surface)',color:'var(--ink2)',boxSizing:'border-box',resize:'vertical' }} />
                   </div>
                 ))}
             </div>
@@ -667,7 +858,7 @@ export default function QuotationPage() {
 
             {/* Notes */}
             <div style={{ marginBottom:14 }}>
-              <div style={{ fontSize:10,color:'var(--ink2)',marginBottom:2 }}>Additional Notes / Terms</div>
+              <div style={{ fontSize:10,color:'var(--ink2)',marginBottom:2 }}>Terms & Notes</div>
               <textarea rows={3} placeholder="e.g. 50% advance required, price valid 7 days…"
                 value={form.notes} onChange={e => setF('notes',e.target.value)}
                 style={{ width:'100%',padding:'7px 10px',borderRadius:7,border:'1.5px solid var(--border)',fontSize:12,background:'var(--bg)',color:'var(--ink)',resize:'vertical',boxSizing:'border-box' }} />
@@ -694,41 +885,27 @@ export default function QuotationPage() {
         </div>
       </div>
 
-      {/* Hidden print ref */}
-      <div ref={printRef} style={{ display:'none' }}>
-        <QuotationPrint
-          quoteNum={'QT-PREVIEW'} quoteDate={form.quoteDate} validDays={form.validDays}
-          custName={form.custName} custPhone={form.custPhone} custAddress={form.custAddress}
-          eventType={form.eventType} pax={form.pax}
-          cart={cart} subtotal={subtotal} totalGst={totalGst}
-          discountAmt={discountAmt} finalTotal={finalTotal} perPax={perPax}
-          notes={form.notes} settings={settings}
-        />
-      </div>
-
       {/* Builder preview modal */}
       {previewQuote === '__builder__' && (
         <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,.7)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20 }}
           onClick={() => setPreviewQuote(null)}>
-          <div style={{ background:'#fff',borderRadius:16,maxWidth:720,width:'100%',maxHeight:'92vh',overflow:'auto',color:'#1a1a1a' }}
+          <div style={{ background:'#fff',borderRadius:16,maxWidth:760,width:'100%',maxHeight:'92vh',overflow:'auto',color:'#1a1a1a' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 20px',borderBottom:'1px solid #eee',position:'sticky',top:0,background:'#fff',zIndex:1 }}>
               <div style={{ fontWeight:800,fontSize:16 }}>Quotation Preview</div>
               <div style={{ display:'flex',gap:8 }}>
-                <button onClick={() => doPrint(null)} style={{ padding:'7px 16px',borderRadius:8,border:'none',background:'#f97316',color:'#fff',fontWeight:700,cursor:'pointer' }}>🖨 Print</button>
+                <button onClick={() => doPrint(null)} style={{ padding:'7px 16px',borderRadius:8,border:'none',background:'#7c3aed',color:'#fff',fontWeight:700,cursor:'pointer' }}>🖨 Print</button>
                 <button onClick={() => setPreviewQuote(null)} style={{ padding:'7px 14px',borderRadius:8,border:'1px solid #ccc',background:'transparent',cursor:'pointer' }}>✕</button>
               </div>
             </div>
-            <div style={{ padding:24 }}>
-              <QuotationPrint
-                quoteNum={'QT-PREVIEW'} quoteDate={form.quoteDate} validDays={form.validDays}
-                custName={form.custName} custPhone={form.custPhone} custAddress={form.custAddress}
-                eventType={form.eventType} pax={form.pax}
-                cart={cart} subtotal={subtotal} totalGst={totalGst}
-                discountAmt={discountAmt} finalTotal={finalTotal} perPax={perPax}
-                notes={form.notes} settings={settings}
-              />
-            </div>
+            <QuotationPrint
+              quoteNum="QT-PREVIEW" quoteDate={form.quoteDate} validDays={form.validDays}
+              custName={form.custName} custPhone={form.custPhone} custEmail={form.custEmail}
+              custAddress={form.custAddress} eventType={form.eventType} pax={form.pax}
+              cart={cart} subtotal={subtotal} totalGst={totalGst}
+              discountAmt={discountAmt} finalTotal={finalTotal} perPax={perPax}
+              notes={form.notes} settings={settings}
+            />
           </div>
         </div>
       )}

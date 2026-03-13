@@ -32,7 +32,7 @@ router.get('/', async (req, res) => {
     if (kots.length) {
       const kotIds = kots.map(k => k.id);
       const [allItems] = await db.query(
-        `SELECT ki.*, oi.unit_price, oi.kot_instructions FROM kot_items ki LEFT JOIN order_items oi ON ki.order_item_id=oi.id WHERE ki.kot_id IN (?)`,
+        `SELECT ki.*, oi.unit_price, oi.kot_instructions FROM kot_items ki LEFT JOIN order_items oi ON ki.order_item_id=oi.id WHERE ki.kot_id IN (?) ORDER BY ki.id ASC`,
         [kotIds]
       );
       const itemMap = {};
@@ -96,6 +96,49 @@ router.patch('/:id/status', async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
+
+// UPDATE individual KOT item status
+router.patch('/:id/items/:itemId/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!VALID_STATUSES.includes(status))
+      return res.status(400).json({ success: false, message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` });
+
+    const [[item]] = await db.query(
+      'SELECT ki.*, kt.order_id, kt.kot_number FROM kot_items ki JOIN kot_tickets kt ON ki.kot_id=kt.id WHERE ki.id=? AND ki.kot_id=?',
+      [req.params.itemId, req.params.id]
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'KOT item not found' });
+
+    await db.query('UPDATE kot_items SET status=? WHERE id=?', [status, req.params.itemId]);
+
+    // Auto-advance KOT ticket status based on all item statuses
+    const [allItems] = await db.query('SELECT status FROM kot_items WHERE kot_id=?', [req.params.id]);
+    const statuses = allItems.map(i => i.status);
+    let kotStatus = null;
+    if (statuses.every(s => s === 'served'))       kotStatus = 'served';
+    else if (statuses.every(s => s === 'ready' || s === 'served')) kotStatus = 'ready';
+    else if (statuses.some(s => s === 'preparing' || s === 'ready')) kotStatus = 'preparing';
+
+    if (kotStatus) {
+      await db.query('UPDATE kot_tickets SET status=? WHERE id=?', [kotStatus, req.params.id]);
+    }
+
+    const payload = {
+      kot_id:   parseInt(req.params.id),
+      item_id:  parseInt(req.params.itemId),
+      status,
+      kot_status: kotStatus,
+      kot_number: item.kot_number,
+    };
+
+    wsHub.broadcast('kot',   { type: 'kot_item_status', payload });
+    wsHub.broadcast('sales', { type: 'kot_item_status', payload });
+    wsHub.broadcast('kds',   { type: 'kot_item_status', payload });
+
+    res.json({ success: true, data: payload });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
 
 // DELETE KOT (admin/manager only)
 router.delete('/:id', authorize('admin','manager'), async (req, res) => {

@@ -419,6 +419,58 @@ router.get('/inventory/movements', async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
+
+// GET /reports/inventory/daily-category — daily category-wise consumption vs purchase
+router.get('/inventory/daily-category', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to required' });
+
+    // Daily consumption (sale_deductions) grouped by category
+    const [consumed] = await db.query(`
+      SELECT
+        DATE_FORMAT(m.created_at,'%Y-%m-%d') AS day,
+        c.id          AS category_id,
+        c.name        AS category_name,
+        c.image_url   AS category_image,
+        SUM(ABS(m.quantity_change) * COALESCE(i.purchase_price,0)) AS consumed_value,
+        SUM(ABS(m.quantity_change))                                  AS consumed_qty
+      FROM inventory_movements m
+      JOIN inventory_items i  ON m.inventory_item_id = i.id
+      JOIN categories      c  ON i.category_id       = c.id
+      WHERE m.movement_type = 'sale_deduction'
+        AND DATE_FORMAT(m.created_at,'%Y-%m-%d') BETWEEN ? AND ?
+      GROUP BY day, c.id
+      ORDER BY day DESC, c.name
+    `, [from, to]);
+
+    // Daily purchases grouped by category
+    const [purchased] = await db.query(`
+      SELECT
+        DATE_FORMAT(p.purchase_date,'%Y-%m-%d') AS day,
+        c.id          AS category_id,
+        c.name        AS category_name,
+        c.image_url   AS category_image,
+        SUM(p.total_amount)    AS purchased_value,
+        SUM(p.quantity)        AS purchased_qty
+      FROM inventory_purchases p
+      JOIN inventory_items i ON p.inventory_item_id = i.id
+      JOIN categories      c ON i.category_id       = c.id
+      WHERE DATE_FORMAT(p.purchase_date,'%Y-%m-%d') BETWEEN ? AND ?
+      GROUP BY day, c.id
+      ORDER BY day DESC, c.name
+    `, [from, to]);
+
+    // All categories present in the period
+    const catMap = {};
+    [...consumed, ...purchased].forEach(r => {
+      catMap[r.category_id] = { id: r.category_id, name: r.category_name, image_url: r.category_image };
+    });
+
+    res.json({ success: true, data: { consumed, purchased, categories: Object.values(catMap) } });
+  } catch(err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
 // GET /reports/inventory/consumption — item consumption by date range
 router.get('/inventory/consumption', async (req, res) => {
   try {
@@ -553,43 +605,30 @@ router.get('/daily-pnl', async (req, res) => {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
 
-    // 1. Daily sales: system orders + manual sales combined
+    // 1. Daily sales + base cost from orders
     const [salesRows] = await db.query(`
-      SELECT date, SUM(total_sale) AS total_sale, SUM(base_cost) AS base_cost,
-             SUM(system_sale) AS system_sale, SUM(manual_sale) AS manual_sale
-      FROM (
-        SELECT
-          DATE_FORMAT(o.created_at,'%Y-%m-%d') AS date,
-          SUM(o.total_amount) AS total_sale,
-          SUM(oi.quantity * COALESCE(mi.cost_price, mi.selling_price * 0.35)) AS base_cost,
-          SUM(o.total_amount) AS system_sale,
-          0 AS manual_sale
-        FROM orders o
-        LEFT JOIN order_items oi ON oi.order_id = o.id
-        LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
-        WHERE o.status = 'paid' AND DATE_FORMAT(o.created_at,'%Y-%m') = ?
-        GROUP BY DATE_FORMAT(o.created_at,'%Y-%m-%d')
-        UNION ALL
-        SELECT
-          DATE_FORMAT(ms.sale_date,'%Y-%m-%d') AS date,
-          SUM(ms.amount) AS total_sale,
-          SUM(ms.base_cost) AS base_cost,
-          0 AS system_sale,
-          SUM(ms.amount) AS manual_sale
-        FROM manual_sales ms
-        WHERE DATE_FORMAT(ms.sale_date,'%Y-%m') = ?
-        GROUP BY DATE_FORMAT(ms.sale_date,'%Y-%m-%d')
-      ) combined GROUP BY date ORDER BY date ASC
-    `, [mth, mth]);
+      SELECT
+        DATE_FORMAT(o.created_at,'%Y-%m-%d') AS date,
+        SUM(o.total_amount) AS total_sale,
+        SUM(oi.quantity * COALESCE(mi.cost_price, mi.selling_price * 0.35)) AS base_cost
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.id
+      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
+      WHERE o.status = 'paid'
+        AND DATE_FORMAT(o.created_at,'%Y-%m') = ?
+      GROUP BY DATE_FORMAT(o.created_at,'%Y-%m-%d')
+      ORDER BY date ASC
+    `, [mth]);
 
-    // 2. Daily expenses — only categories flagged include_in_pnl=1
+    // 2. Daily misc expenses only — Marketing, Maintenance, Miscellaneous categories
+    // (Salary, Advance, Fuel, Electricity etc. are already counted separately)
     const [expRows] = await db.query(`
       SELECT DATE_FORMAT(e.date,'%Y-%m-%d') AS date,
              SUM(e.amount) AS total_expense
       FROM expenses e
       JOIN expense_categories ec ON e.category_id = ec.id
       WHERE DATE_FORMAT(e.date,'%Y-%m') = ?
-        AND ec.include_in_pnl = 1
+        AND LOWER(ec.name) IN ('marketing','maintenance','miscellaneous')
       GROUP BY DATE_FORMAT(e.date,'%Y-%m-%d')
     `, [mth]);
 
@@ -622,12 +661,7 @@ router.get('/daily-pnl', async (req, res) => {
 
     // 5. Build day-by-day array
     const salesMap = {};
-    salesRows.forEach(r => { salesMap[r.date] = {
-      total_sale:   parseFloat(r.total_sale)||0,
-      base_cost:    parseFloat(r.base_cost)||0,
-      system_sale:  parseFloat(r.system_sale)||0,
-      manual_sale:  parseFloat(r.manual_sale)||0,
-    }; });
+    salesRows.forEach(r => { salesMap[r.date] = { total_sale: parseFloat(r.total_sale)||0, base_cost: parseFloat(r.base_cost)||0 }; });
     const expMap = {};
     expRows.forEach(r => { expMap[r.date] = parseFloat(r.total_expense)||0; });
 
@@ -636,7 +670,7 @@ router.get('/daily-pnl', async (req, res) => {
       const dateStr = `${mth}-${String(d).padStart(2,'0')}`;
       const isPast    = dateStr <= todayStr;
       const isToday   = dateStr === todayStr;
-      const s = salesMap[dateStr] || { total_sale: 0, base_cost: 0, system_sale: 0, manual_sale: 0 };
+      const s = salesMap[dateStr] || { total_sale: 0, base_cost: 0 };
       const expense   = expMap[dateStr] || 0;
       const totalDeductions = s.base_cost + dailySalary + dailyRent + dailyLight + expense;
       const profit = s.total_sale - totalDeductions;
@@ -647,8 +681,6 @@ router.get('/daily-pnl', async (req, res) => {
         is_today:     isToday,
         has_sale:     s.total_sale > 0,
         total_sale:   s.total_sale,
-        system_sale:  s.system_sale,
-        manual_sale:  s.manual_sale,
         base_cost:    s.base_cost,
         salary:       dailySalary,
         rent:         dailyRent,
@@ -676,51 +708,4 @@ router.get('/daily-pnl', async (req, res) => {
       averages: { sale: avgSale, base_cost: avgCost, expense: avgExpense, profit: avgProfit },
     }});
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-});
-
-// ── MANUAL SALES CRUD ─────────────────────────────────────
-router.get('/manual-sales', async (req, res) => {
-  try {
-    const { month, date } = req.query;
-    let where = 'WHERE 1=1';
-    const params = [];
-    if (month) { where += " AND DATE_FORMAT(sale_date,'%Y-%m')=?"; params.push(month); }
-    if (date)  { where += " AND DATE_FORMAT(sale_date,'%Y-%m-%d')=?"; params.push(date); }
-    const [rows] = await db.query(
-      `SELECT ms.*, u.name AS created_by_name
-       FROM manual_sales ms
-       LEFT JOIN users u ON ms.created_by = u.id
-       ${where} ORDER BY sale_date DESC, ms.id DESC`, params);
-    res.json({ success: true, data: rows });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-router.post('/manual-sales', async (req, res) => {
-  try {
-    const { sale_date, amount, base_cost, note, source } = req.body;
-    if (!sale_date || !amount) return res.status(400).json({ success: false, message: 'sale_date and amount required' });
-    const [r] = await db.query(
-      'INSERT INTO manual_sales (sale_date, amount, base_cost, note, source, created_by) VALUES (?,?,?,?,?,?)',
-      [sale_date, parseFloat(amount), parseFloat(base_cost)||0, note||null, source||'manual', req.user.id]
-    );
-    res.status(201).json({ success: true, data: { id: r.insertId } });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-router.put('/manual-sales/:id', authorize('admin','manager'), async (req, res) => {
-  try {
-    const { sale_date, amount, base_cost, note, source } = req.body;
-    await db.query(
-      'UPDATE manual_sales SET sale_date=?, amount=?, base_cost=?, note=?, source=? WHERE id=?',
-      [sale_date, parseFloat(amount), parseFloat(base_cost)||0, note||null, source||'manual', req.params.id]
-    );
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-router.delete('/manual-sales/:id', authorize('admin','manager'), async (req, res) => {
-  try {
-    await db.query('DELETE FROM manual_sales WHERE id=?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });

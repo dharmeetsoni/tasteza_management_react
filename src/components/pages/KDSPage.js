@@ -3,7 +3,7 @@
  * 3-column kanban (Pending → Preparing → Ready) + common items summary panel.
  */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getKOTs, updateKOTStatus } from '../../api';
+import { getKOTs, updateKOTStatus, updateKOTItemStatus } from '../../api';
 import { useToast } from '../../context/ToastContext';
 import { useWS, useWSEvent } from '../../context/WSContext';
 
@@ -32,7 +32,15 @@ const COLS = [
   { status:'ready',     label:'Ready!',    icon:'✅', color:'#4ade80', bg:'rgba(74,222,128,.06)', nextLabel:'✓ Served',         nextStatus:'served'    },
 ];
 
-function KOTCard({ kot, col, onMove, updating }) {
+const ITEM_STATUS = {
+  pending:   { icon:'🕐', color:'#f59e0b', bg:'rgba(245,158,11,.13)'  },
+  preparing: { icon:'🔥', color:'#38bdf8', bg:'rgba(56,189,248,.13)'  },
+  ready:     { icon:'✅', color:'#4ade80', bg:'rgba(74,222,128,.13)'  },
+  served:    { icon:'🍽️', color:'#94a3b8', bg:'rgba(148,163,184,.13)' },
+};
+const ITEM_STATUS_STEPS = ['pending','preparing','ready','served'];
+
+function KOTCard({ kot, col, onMove, onItemStatus, updating }) {
   const items = kot.items || [];
   const busy = updating[kot.id];
   return (
@@ -64,29 +72,60 @@ function KOTCard({ kot, col, onMove, updating }) {
         </div>
       </div>
 
-      {/* Items */}
+      {/* Items with per-item status */}
       <div style={{ padding:'2px 0' }}>
         {items.length === 0 ? (
           <div style={{padding:'10px 12px',fontSize:12,color:'var(--ink2)'}}>No items</div>
-        ) : items.map((item, i) => (
-          <div key={i} style={{
-            display:'flex', justifyContent:'space-between', alignItems:'center',
-            padding:'9px 12px',
-            borderBottom: i < items.length-1 ? '1px solid var(--border)' : 'none',
-          }}>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:14, fontWeight:700 }}>{item.item_name}</div>
-              {item.kot_instructions && (
-                <div style={{ fontSize:11, color:'#b07a00', marginTop:1, fontStyle:'italic' }}>⚠️ {item.kot_instructions}</div>
-              )}
+        ) : items.map((item, i) => {
+          const ist = ITEM_STATUS[item.status || 'pending'];
+          const isBusy = updating[`${kot.id}_${item.id}`];
+          return (
+            <div key={item.id ?? i} style={{
+              padding:'9px 12px',
+              borderBottom: i < items.length-1 ? '1px solid var(--border)' : 'none',
+              opacity: isBusy ? .6 : 1, transition:'opacity .15s',
+            }}>
+              {/* Item name + qty + current status badge */}
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:5 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:14, fontWeight:700 }}>{item.item_name}</div>
+                  {item.kot_instructions && (
+                    <div style={{ fontSize:11, color:'#b07a00', marginTop:1, fontStyle:'italic' }}>⚠️ {item.kot_instructions}</div>
+                  )}
+                </div>
+                <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+                  <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:10,
+                    background: ist.bg, color: ist.color, whiteSpace:'nowrap' }}>
+                    {ist.icon} {item.status || 'pending'}
+                  </span>
+                  <div style={{ width:30, height:30, borderRadius:7, background:`${col.color}22`,
+                    color:col.color, display:'flex', alignItems:'center', justifyContent:'center',
+                    fontSize:15, fontWeight:900 }}>
+                    {item.quantity}
+                  </div>
+                </div>
+              </div>
+              {/* Per-item status step buttons */}
+              <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                {ITEM_STATUS_STEPS.map(s => {
+                  const sm = ITEM_STATUS[s];
+                  const active = (item.status || 'pending') === s;
+                  return (
+                    <button key={s} disabled={isBusy} onClick={() => onItemStatus(kot, item, s)}
+                      style={{ padding:'3px 9px', borderRadius:8, fontSize:10, fontWeight:700,
+                        cursor: isBusy ? 'not-allowed' : 'pointer', border:'1px solid',
+                        transition:'all .12s', fontFamily:'inherit',
+                        background: active ? sm.bg : 'transparent',
+                        color: active ? sm.color : 'var(--ink2)',
+                        borderColor: active ? sm.color : 'var(--border)' }}>
+                      {sm.icon} {s}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div style={{ width:32, height:32, borderRadius:8, background:`${col.color}22`,
-              color:col.color, display:'flex', alignItems:'center', justifyContent:'center',
-              fontSize:16, fontWeight:900, flexShrink:0 }}>
-              {item.quantity}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {kot.instructions && (
@@ -96,7 +135,7 @@ function KOTCard({ kot, col, onMove, updating }) {
         </div>
       )}
 
-      {/* Actions */}
+      {/* KOT-level action buttons */}
       <div style={{ padding:'8px 10px 10px', display:'flex', gap:7 }}>
         <button disabled={busy} onClick={() => onMove(kot, col.nextStatus)}
           style={{ flex:1, padding:'11px 0', borderRadius:10, fontSize:12, fontWeight:800,
@@ -142,6 +181,15 @@ export default function KDSPage() {
     if (p?.id && p?.status)
       setKots(prev => prev.map(k => k.id === p.id ? { ...k, status: p.status } : k));
   });
+  useWSEvent('kot_item_status', (p) => {
+    if (!p?.kot_id) return;
+    setKots(prev => prev.map(k => {
+      if (k.id !== p.kot_id) return k;
+      const updated = { ...k, items: (k.items||[]).map(it => it.id === p.item_id ? { ...it, status: p.status } : it) };
+      if (p.kot_status) updated.status = p.kot_status;
+      return updated;
+    }));
+  });
   useWSEvent('order_created', () => load(true));
 
   const changeStatus = async (kot, newStatus) => {
@@ -157,6 +205,36 @@ export default function KDSPage() {
       setKots(prev => prev.map(k => k.id === kot.id ? { ...k, status: kot.status } : k));
     }
     setUpdating(u => ({ ...u, [kot.id]: false }));
+  };
+
+  const changeItemStatus = async (kot, item, newStatus) => {
+    const busyKey = `${kot.id}_${item.id}`;
+    setUpdating(u => ({ ...u, [busyKey]: true }));
+    // Optimistic update
+    const applyItemStatus = (kots, kotStatus) => kots.map(k => {
+      if (k.id !== kot.id) return k;
+      const updated = { ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: newStatus } : it) };
+      if (kotStatus) updated.status = kotStatus;
+      return updated;
+    });
+    setKots(prev => applyItemStatus(prev, null));
+    try {
+      const r = await updateKOTItemStatus(kot.id, item.id, newStatus);
+      if (r.success && r.data?.kot_status) {
+        setKots(prev => applyItemStatus(prev, r.data.kot_status));
+      } else if (!r.success) {
+        // Rollback item
+        setKots(prev => prev.map(k => k.id !== kot.id ? k : {
+          ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: item.status } : it)
+        }));
+        toast('Item update failed', 'er');
+      }
+    } catch {
+      setKots(prev => prev.map(k => k.id !== kot.id ? k : {
+        ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: item.status } : it)
+      }));
+    }
+    setUpdating(u => ({ ...u, [busyKey]: false }));
   };
 
   const counts = useMemo(() =>
@@ -241,7 +319,7 @@ export default function KDSPage() {
               ) : (
                 <div className="kds-col-cards">
                   {colKots.map(kot => (
-                    <KOTCard key={kot.id} kot={kot} col={col} onMove={changeStatus} updating={updating} />
+                    <KOTCard key={kot.id} kot={kot} col={col} onMove={changeStatus} onItemStatus={changeItemStatus} updating={updating} />
                   ))}
                 </div>
               )}

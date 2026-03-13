@@ -58,6 +58,7 @@ app.use('/api/reports',        require('./routes/reports'));
 app.use('/api/settings',       require('./routes/settings'));
 app.use('/api/salary-mgmt',    require('./routes/salary_mgmt'));
 app.use('/api/expenses',       require('./routes/expenses'));
+app.use('/api/quotations',     require('./routes/quotations'));
 
 app.get('/api', (req, res) => res.json({ status:'OK', message:'🍽️ Tasteza API' }));
 

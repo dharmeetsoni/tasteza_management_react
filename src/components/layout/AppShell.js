@@ -31,6 +31,8 @@ import BillSettingsPage  from '../pages/BillSettingsPage';
 import SalaryMgmtPage   from '../pages/SalaryMgmtPage';
 import ExpensesPage      from '../pages/ExpensesPage';
 import ExpenseCategoryManagerPage from '../pages/ExpenseCategoryManagerPage';
+import ConsumptionPage    from '../pages/ConsumptionPage';
+import QuotationPage      from '../pages/QuotationPage';
 import KDSPage           from '../pages/KDSPage';
 import DashboardPage     from '../pages/DashboardPage';
 
@@ -38,7 +40,8 @@ const ROLE_DEFAULTS = {
   admin:   ['*'],
   manager: ['dashboard','sales','kot','orders','kds','coupons','zomato','inventory','purchaseorders','purchases',
              'categories','units','recipes','menuitems','courses','salary','fuel',
-             'salarymgmt','expenses','staff','reports','billsettings','profile'],
+             'salarymgmt','expenses','expcategories','staff','reports','profitloss',
+             'pastorder','consumption','quotation','billsettings','profile'],
   waiter:  ['dashboard','sales','kot','kds','profile'],
   staff:   ['dashboard','sales','kot','kds','inventory','profile'],
 };
@@ -71,6 +74,8 @@ const NAV = [
   { id:'reports',        label:'Reports',            icon:'📊'                    },
   { id:'profitloss',     label:'Profit & Loss',      icon:'📈'                    },
   { id:'pastorder',      label:'Past Date Sale',      icon:'🕐'                    },
+  { id:'consumption',    label:'Consumption Report',  icon:'📉'                    },
+  { id:'quotation',      label:'Quotations',           icon:'📋'                    },
   { id:'billsettings',   label:'Bill Settings',      icon:'🧾', adminOnly:false   },
   { id:'users',          label:'Users & Access',     icon:'🔐', adminOnly:true    },
   { id:'profile',        label:'My Profile',         icon:'👤'                    },
@@ -165,6 +170,8 @@ export default function AppShell() {
       case 'reports':        return <ReportsPage />;
       case 'profitloss':     return <ProfitLossPage />;
       case 'pastorder':      return <PastOrderPage />;
+      case 'consumption':    return <ConsumptionPage />;
+      case 'quotation':      return <QuotationPage />;
       case 'billsettings':   return <BillSettingsPage />;
       case 'users':          return <UsersPage />;
       case 'profile':        return <ProfilePage />;

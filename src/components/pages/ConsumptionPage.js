@@ -32,8 +32,11 @@ export default function ConsumptionPage() {
     try {
       const r = await getDailyCategoryConsumption({ from, to });
       if (r.success) setData(r.data);
-      else toast(r.message || 'Failed', 'er');
-    } catch { toast('Failed to load', 'er'); }
+      else toast(r.message || 'Failed to load', 'er');
+    } catch(err) {
+      const msg = err?.response?.data?.message || err?.message || 'Failed to load';
+      toast(msg, 'er');
+    }
     finally { setLoading(false); }
   }, [from, to]);
 
@@ -123,11 +126,21 @@ export default function ConsumptionPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="stats-row">
-        <div className="scard"><div style={{ fontSize: 20 }}>🛒</div><div className="scard-text"><div className="sv small">{fmtCur(grandPurchased)}</div><div className="sl">Total Purchased</div></div></div>
-        <div className="scard" style={{ borderTop: '3px solid #e84a5f' }}><div style={{ fontSize: 20 }}>📉</div><div className="scard-text"><div className="sv small" style={{ color: '#e84a5f' }}>{fmtCur(grandConsumed)}</div><div className="sl">Total Consumed</div></div></div>
-        <div className="scard" style={{ borderTop: `3px solid ${diffColor(grandDiff)}` }}><div style={{ fontSize: 20 }}>⚖️</div><div className="scard-text"><div className="sv small" style={{ color: diffColor(grandDiff) }}>{grandDiff >= 0 ? '+' : ''}{fmtCur(grandDiff)}</div><div className="sl">Difference (Purchased − Consumed)</div></div></div>
-        <div className="scard"><div style={{ fontSize: 20 }}>🏷️</div><div className="scard-text"><div className="sv">{categories.length}</div><div className="sl">Categories</div></div></div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:12, padding:'0 20px 20px' }}>
+        {[
+          { icon:'🛒', label:'Total Purchased',  value:fmtCur(grandPurchased), color:'var(--ink)',          border:'var(--accent)' },
+          { icon:'📉', label:'Total Consumed',   value:fmtCur(grandConsumed),  color:'#e84a5f',             border:'#e84a5f' },
+          { icon:'⚖️', label:'Difference',       value:(grandDiff>=0?'+':'')+fmtCur(grandDiff), color:diffColor(grandDiff), border:diffColor(grandDiff) },
+          { icon:'🏷️', label:'Categories',       value:categories.length,      color:'var(--ink)',          border:'var(--border)' },
+        ].map(c => (
+          <div key={c.label} style={{ background:'var(--surface)', borderRadius:12, padding:'14px 16px', borderTop:`3px solid ${c.border}`, display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ fontSize:22, flexShrink:0 }}>{c.icon}</div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:18, fontWeight:800, color:c.color, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.value}</div>
+              <div style={{ fontSize:12, color:'var(--ink2)', marginTop:2 }}>{c.label}</div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {loading && <div className="loading-wrap">Loading…</div>}

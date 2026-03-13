@@ -187,7 +187,6 @@ export const reKot             = (orderId, d)         => oMutate('post',   `/ord
 export const getKOTs          = (p)       => oGet('/kot', p);
 export const getKOT           = (id)      => oGet(`/kot/${id}`);
 export const updateKOTStatus  = (id, st)  => oMutate('patch', `/kot/${id}/status`, { status: st }, true);
-export const updateKOTItemStatus = (kotId, itemId, st) => oMutate('patch', `/kot/${kotId}/items/${itemId}/status`, { status: st }, true);
 export const deleteKOT        = (id)       => oMutate('delete', `/kot/${id}`);
 
 // ── Zomato ────────────────────────────────────────────────
