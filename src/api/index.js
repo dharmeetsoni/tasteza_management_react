@@ -50,10 +50,14 @@ async function oMutate(method, path, body, queueable = false) {
     return r.data;
   } catch (err) {
     if (queueable && (isNetworkError(err) || !navigator.onLine)) {
+      // Sanitise body through JSON round-trip to strip any non-clonable values
+      // (e.g. DOM events accidentally passed as arguments)
+      let safeBody;
+      try { safeBody = JSON.parse(JSON.stringify(body ?? null)); } catch { safeBody = null; }
       const id = await queuePush({
         url:    BASE + path,
         method: method.toUpperCase(),
-        body,
+        body:   safeBody,
       });
       window.dispatchEvent(new Event('tasteza-queued'));
       // Return optimistic response so UI doesn't break
@@ -257,3 +261,17 @@ export const deleteExpenseCategory  = (id)    => oMutate('delete', `/expenses/ca
 export const createExpense        = (d)    => oMutate('post',   '/expenses', d);
 export const updateExpense        = (id,d) => oMutate('put',    `/expenses/${id}`, d);
 export const deleteExpense        = (id)   => oMutate('delete', `/expenses/${id}`);
+
+// Quotations
+export const getQuotations    = (p)    => oGet('/quotations', p);
+export const getQuotation     = (id)   => oGet(`/quotations/${id}`);
+export const createQuotation  = (d)    => oMutate('post',   '/quotations', d);
+export const updateQuotation  = (id,d) => oMutate('put',    `/quotations/${id}`, d);
+export const deleteQuotation  = (id)   => oMutate('delete', `/quotations/${id}`);
+
+// Manage bill (change items/date on paid order)
+export const manageBill       = (id,d) => oMutate('put',    `/orders/${id}/manage`, d);
+
+// Daily category consumption
+export const getDailyCategoryConsumption = (p) => oGet('/reports/inventory/daily-category', p);
+

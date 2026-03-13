@@ -183,10 +183,16 @@ router.post('/', async (req, res) => {
     }
     const total = subtotal + totalGst;
     await conn.query('UPDATE orders SET subtotal=?,gst_amount=?,total_amount=? WHERE id=?', [subtotal, totalGst, total, orderId]);
+    // Guard: if all items were skipped (all menu_item_id invalid), cancel and warn
+    if (subtotal === 0 && items.length > 0) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'None of the items were found in the menu. Please refresh and try again.' });
+    }
+
     await conn.commit();
     wsHub.broadcast('sales', { type:'order_created', payload: { id: orderId, order_number, table_id: table_id||null } });
     wsHub.broadcast('dashboard', { type:'stats_update' });
-    res.status(201).json({ success: true, data: { id: orderId, order_number } });
+    res.status(201).json({ success: true, data: { id: orderId, order_number, item_count: items.length } });
   } catch (err) { await conn.rollback(); res.status(500).json({ success: false, message: err.message }); }
   finally { conn.release(); }
 });
@@ -229,7 +235,7 @@ router.put('/:id/items', async (req, res) => {
     const total = subtotal + totalGst;
     await conn.query('UPDATE orders SET subtotal=?,gst_amount=?,total_amount=? WHERE id=?', [subtotal, totalGst, total, req.params.id]);
     await conn.commit();
-    res.json({ success: true });
+    res.json({ success: true, data: { total_amount: total } });
   } catch (err) { await conn.rollback(); res.status(500).json({ success: false, message: err.message }); }
   finally { conn.release(); }
 });
@@ -291,13 +297,19 @@ router.post('/:id/bill', async (req, res) => {
     discountAmt = Math.min(discountAmt, parseFloat(order.total_amount));
     const finalTotal = Math.max(0, parseFloat(order.total_amount) - discountAmt);
 
+    const billTs = req.body.override_date ? req.body.override_date + ' 23:59:00' : null;
     await conn.query(
       `UPDATE orders SET status='billed',customer_name=?,customer_phone=?,
        discount_type=?,discount_value=?,discount_amount=?,coupon_id=?,coupon_code=?,
-       total_amount=?,notes=?,billed_by=?,billed_at=NOW() WHERE id=?`,
+       total_amount=?,notes=?,billed_by=?,
+       billed_at=COALESCE(?,NOW()),
+       created_at=COALESCE(?,created_at)
+       WHERE id=?`,
       [customer_name||null, customer_phone||null, discount_type||null,
        parseFloat(discount_value)||0, discountAmt, couponId, appliedCoupon,
-       finalTotal, notes||null, req.user.id, req.params.id]
+       finalTotal, notes||null, req.user.id,
+       billTs, billTs,
+       req.params.id]
     );
     // Auto-serve all KOTs for this order that are still pending/preparing/ready
     await conn.query(
@@ -473,6 +485,100 @@ router.post('/:id/cancel', async (req, res) => {
     wsHub.broadcast('sales', { type:'order_cancelled', payload: { id: parseInt(req.params.id) } });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+});
+
+
+// ── MANAGE BILL — edit items/date on a billed/paid order ─────
+router.put('/:id/manage', authorize('admin','manager'), async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { items, override_date, payment_method, customer_name, customer_phone, notes,
+            discount_type, discount_value } = req.body;
+    const [[order]] = await conn.query('SELECT * FROM orders WHERE id=?', [req.params.id]);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+
+    // Rebuild items if provided
+    if (items && items.length) {
+      // Reverse old inventory deductions
+      try {
+        const [oldMoves] = await conn.query(
+          "SELECT * FROM inventory_movements WHERE reference_type='order' AND reference_id=? AND movement_type='sale_deduction'",
+          [req.params.id]
+        );
+        for (const m of oldMoves) {
+          const deducted = Math.abs(parseFloat(m.quantity_change));
+          await conn.query('UPDATE inventory_items SET current_quantity=current_quantity+? WHERE id=?', [deducted, m.inventory_item_id]);
+        }
+        await conn.query("DELETE FROM inventory_movements WHERE reference_type='order' AND reference_id=? AND movement_type='sale_deduction'", [req.params.id]);
+      } catch(e) { console.warn('manage-bill: inventory reversal skipped:', e.message); }
+
+      // Delete all existing order items
+      await conn.query('DELETE FROM order_items WHERE order_id=?', [req.params.id]);
+
+      // Re-insert items
+      let subtotal = 0, totalGst = 0;
+      for (const item of items) {
+        const [[mi]] = await conn.query('SELECT * FROM menu_items WHERE id=?', [item.menu_item_id]);
+        if (!mi) continue;
+        const price  = parseFloat(mi.selling_price);
+        const gstPct = parseFloat(mi.gst_percent) || 0;
+        const qty    = parseInt(item.quantity) || 1;
+        const lineGst   = price * qty * gstPct / 100;
+        const lineTotal = price * qty + lineGst;
+        subtotal  += price * qty;
+        totalGst  += lineGst;
+        await conn.query(
+          `INSERT INTO order_items (order_id,menu_item_id,item_name,quantity,unit_price,gst_percent,gst_amount,total_price,kot_sent)
+           VALUES (?,?,?,?,?,?,?,?,1)`,
+          [req.params.id, mi.id, mi.name, qty, price, gstPct, lineGst, lineTotal]
+        );
+      }
+
+      // Recalculate discount
+      const rawTotal = subtotal + totalGst;
+      let discountAmt = 0;
+      if (discount_type === 'percentage' && discount_value > 0)
+        discountAmt = rawTotal * parseFloat(discount_value) / 100;
+      else if (discount_type === 'amount' && discount_value > 0)
+        discountAmt = Math.min(parseFloat(discount_value), rawTotal);
+      else discountAmt = parseFloat(order.discount_amount) || 0;
+      const finalTotal = Math.max(0, rawTotal - discountAmt);
+
+      await conn.query(
+        `UPDATE orders SET subtotal=?,gst_amount=?,discount_amount=?,total_amount=? WHERE id=?`,
+        [subtotal, totalGst, discountAmt, finalTotal, req.params.id]
+      );
+
+      // Re-deduct inventory
+      try { await deductInventoryForOrder(conn, req.params.id, req.user.id); }
+      catch(e) { console.warn('manage-bill: re-deduct skipped:', e.message); }
+    }
+
+    // Update metadata
+    const updateFields = [];
+    const updateVals   = [];
+    if (override_date) {
+      const ts = override_date + ' 23:59:00';
+      updateFields.push('created_at=?', 'billed_at=?', 'paid_at=?');
+      updateVals.push(ts, ts, ts);
+    }
+    if (payment_method !== undefined) { updateFields.push('payment_method=?'); updateVals.push(payment_method); }
+    if (customer_name  !== undefined) { updateFields.push('customer_name=?');  updateVals.push(customer_name||null); }
+    if (customer_phone !== undefined) { updateFields.push('customer_phone=?'); updateVals.push(customer_phone||null); }
+    if (notes          !== undefined) { updateFields.push('notes=?');          updateVals.push(notes||null); }
+    if (updateFields.length) {
+      updateVals.push(req.params.id);
+      await conn.query(`UPDATE orders SET ${updateFields.join(',')} WHERE id=?`, updateVals);
+    }
+
+    await conn.commit();
+    wsHub.broadcast('dashboard', { type:'stats_update' });
+    res.json({ success: true });
+  } catch(err) {
+    await conn.rollback();
+    res.status(500).json({ success:false, message: err.message });
+  } finally { conn.release(); }
 });
 
 module.exports = router;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { getTables, getMenuItems, createOrder, updateOrderItems, sendKOT,
          generateBill, markPaid, cancelOrder, getOrder, validateCoupon, getCoupons, getSettings,
-         updateOrderItem, deleteOrderItem, reKot } from '../../api';
+         updateOrderItem, deleteOrderItem, reKot, manageBill, getOrdersList } from '../../api';
 import { useToast } from '../../context/ToastContext';
 import { fmtCur } from '../../utils';
 import Modal from '../ui/Modal';
@@ -253,10 +253,19 @@ export default function SalesPage() {
 
   // Bill modal
   const [billModal, setBillModal] = useState(false);
-  const [billForm, setBillForm] = useState({ customer_name: '', customer_phone: '', discount_type: '', discount_value: '', coupon_code: '', notes: '', payment_method: 'cash' });
+  const [billForm, setBillForm] = useState({ customer_name: '', customer_phone: '', discount_type: '', discount_value: '', coupon_code: '', notes: '', payment_method: 'cash', override_date: '' });
   const [couponResult, setCouponResult] = useState(null);
   const [couponError, setCouponError] = useState('');
   const [billOrder, setBillOrder] = useState(null); // final billed order for receipt
+  const [manageBillModal, setManageBillModal] = useState(false);
+  const [manageBillOrder, setManageBillOrder] = useState(null);
+  const [manageBillCart, setManageBillCart] = useState([]);
+  const [manageBillDate, setManageBillDate] = useState('');
+  const [manageBillPay, setManageBillPay] = useState('cash');
+  const [manageBillWorking, setManageBillWorking] = useState(false);
+  const [manageOrdersList, setManageOrdersList] = useState([]);
+  const [manageSearchText, setManageSearchText] = useState('');
+  const [manageSearchDate, setManageSearchDate] = useState('');
 
   // Receipt modal
   const [receiptModal, setReceiptModal] = useState(false);
@@ -315,7 +324,9 @@ export default function SalesPage() {
   useWSEvent('kot_new',        () => { void load(true); });
 
   // ── Table selection → open POS ─────────────────────────
+  const selectedTableRef = React.useRef(null);
   const openTable = async (table) => {
+    selectedTableRef.current = table; // sync ref for immediate access
     setSelectedTable(table);
     setOrderType(table.order_id ? table.order_type || 'dine_in' : 'dine_in');
     setMenuSearch('');
@@ -380,37 +391,91 @@ export default function SalesPage() {
   const cartGst = cart.reduce((s, i) => s + i.unit_price * i.quantity * (i.gst_percent / 100), 0);
   const cartTotal = cartSubtotal + cartGst;
 
-  // All items: KOT'd + cart
+  // All items for order summary:
+  // - If cart is empty (just saved / just opened): show ALL items from currentOrder
+  // - If cart has new items (mid-edit): show KOT'd items from order + pending cart items
+  //   (un-KOT'd items from order were loaded into cart by openTable, so no double-display)
   const allOrderItems = currentOrder
-    ? [...(currentOrder.items || []).filter(i => i.kot_sent), ...cart]
+    ? cart.length > 0
+      ? [...(currentOrder.items || []).filter(i => i.kot_sent), ...cart]
+      : (currentOrder.items || [])
     : cart;
   const allSubtotal = allOrderItems.reduce((s, i) => s + parseFloat(i.unit_price) * i.quantity, 0);
   const allGst = allOrderItems.reduce((s, i) => s + parseFloat(i.unit_price) * i.quantity * (parseFloat(i.gst_percent||0) / 100), 0);
   const allTotal = allSubtotal + allGst;
 
   // ── Save order / add items ─────────────────────────────
-  const saveOrder = async () => {
+  const saveOrder = async (explicitTableId) => {
     if (!cart.length) { toast('Add items first.', 'er'); return; }
+
+    // Always read table_id from the ref (set synchronously in openTable before any await)
+    // This avoids the React state-update race where selectedTable?.id is briefly null
+    const tableId = explicitTableId !== undefined
+      ? explicitTableId
+      : (selectedTableRef.current?.id ?? selectedTable?.id ?? null);
+
+    // Validate all cart items have valid menu_item_id
+    const invalidItems = cart.filter(i => !i.menu_item_id);
+    if (invalidItems.length) {
+      toast(`${invalidItems.length} item(s) have no menu ID — please remove and re-add them.`, 'er');
+      return;
+    }
+
     try {
       if (!currentOrder) {
-        const d = await createOrder({ table_id: selectedTable?.id || null, order_type: orderType, items: cart, kot_instructions: kotInstructions });
+        const d = await createOrder({
+          table_id:         tableId,
+          order_type:       orderType,
+          items:            cart.map(i => ({
+            menu_item_id:    i.menu_item_id,
+            quantity:        typeof i.quantity === 'string' ? parseInt(i.quantity) || 1 : i.quantity,
+            kot_instructions: i.kot_instructions || null,
+            notes:           i.notes || null,
+          })),
+          kot_instructions: kotInstructions,
+        });
         if (d.success) {
           toast('Order created! ✅', 'ok');
-          await load();
-          // Refresh
           const od = await getOrder(d.data.id);
           if (od.success) { setCurrentOrder(od.data); setCart([]); }
-        } else toast(d.message, 'er');
+          await load();
+        } else {
+          toast(d.message || 'Failed to create order', 'er');
+        }
       } else {
-        const d = await updateOrderItems(currentOrder.id, { items: cart, kot_instructions: kotInstructions });
+        // Merge already-saved (kot_sent=0) items with new cart items.
+        // The server deletes all kot_sent=0 rows and re-inserts, so we must
+        // send the FULL un-KOT'd list — existing saved items + new cart additions.
+        // If the same menu_item_id appears in both, sum the quantities.
+        const savedItems = (currentOrder.items || []).filter(i => !i.kot_sent);
+        const mergedMap = {};
+        for (const i of savedItems) {
+          const k = i.menu_item_id;
+          if (mergedMap[k]) mergedMap[k].quantity += parseInt(i.quantity) || 1;
+          else mergedMap[k] = { menu_item_id: i.menu_item_id, quantity: parseInt(i.quantity) || 1, kot_instructions: i.kot_instructions || null, notes: i.notes || null };
+        }
+        for (const i of cart) {
+          const k = i.menu_item_id;
+          if (mergedMap[k]) mergedMap[k].quantity += typeof i.quantity === 'string' ? parseInt(i.quantity) || 1 : i.quantity;
+          else mergedMap[k] = { menu_item_id: i.menu_item_id, quantity: typeof i.quantity === 'string' ? parseInt(i.quantity) || 1 : i.quantity, kot_instructions: i.kot_instructions || null, notes: i.notes || null };
+        }
+        const mergedItems = Object.values(mergedMap);
+        const d = await updateOrderItems(currentOrder.id, {
+          items: mergedItems,
+          kot_instructions: kotInstructions,
+        });
         if (d.success) {
-          toast('Items updated! ✅', 'ok');
+          toast('Items saved! ✅', 'ok');
           const od = await getOrder(currentOrder.id);
           if (od.success) { setCurrentOrder(od.data); setCart([]); }
           await load();
-        } else toast(d.message, 'er');
+        } else {
+          toast(d.message || 'Failed to save items', 'er');
+        }
       }
-    } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
+    } catch (err) {
+      toast(err?.response?.data?.message || err?.message || 'Error saving order', 'er');
+    }
   };
 
 
@@ -516,7 +581,9 @@ export default function SalesPage() {
   // ── Bill ──────────────────────────────────────────────
   const openBill = () => {
     if (!currentOrder) { toast('No active order.', 'er'); return; }
-    setBillForm({ customer_name: currentOrder.customer_name||'', customer_phone: currentOrder.customer_phone||'', discount_type: '', discount_value: '', coupon_code: '', notes: '', payment_method: 'cash' });
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    setBillForm({ customer_name: currentOrder.customer_name||'', customer_phone: currentOrder.customer_phone||'', discount_type: '', discount_value: '', coupon_code: '', notes: '', payment_method: 'cash', override_date: todayStr });
     setCouponResult(null);
     setCouponError('');
     setBillModal(true);
@@ -554,6 +621,7 @@ export default function SalesPage() {
         discount_value: billForm.discount_value || 0,
         coupon_code: billForm.discount_type === 'coupon' ? billForm.coupon_code : null,
         notes: billForm.notes,
+        override_date: billForm.override_date || null,
       });
       if (d.success) {
         const od = await getOrder(currentOrder.id);
@@ -569,6 +637,62 @@ export default function SalesPage() {
         await load();
       } else toast(d.message, 'er');
     } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
+  };
+
+
+  // ── Open Manage Bill ─────────────────────────────────────
+  const openManageBill = async () => {
+    setManageBillWorking(true);
+    try {
+      const today = new Date();
+      const from = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
+      const to   = today.toISOString().slice(0,10);
+      const d = await getOrdersList({ from, to, status: 'paid', limit: 200 });
+      if (d.success) setManageOrdersList(d.data);
+      setManageSearchDate(to);
+      setManageBillModal(true);
+    } catch(e) { toast('Could not load orders', 'er'); }
+    finally { setManageBillWorking(false); }
+  };
+
+  const openManageEdit = async (order) => {
+    const d = await getOrder(order.id);
+    if (!d.success) { toast('Could not load order', 'er'); return; }
+    const o = d.data;
+    setManageBillOrder(o);
+    setManageBillCart((o.items||[]).map(i => ({
+      menu_item_id: i.menu_item_id,
+      item_name: i.item_name,
+      quantity: i.quantity,
+      unit_price: parseFloat(i.unit_price),
+      gst_percent: parseFloat(i.gst_percent||0),
+    })));
+    const createdDate = (o.paid_at || o.created_at || '').slice(0,10);
+    setManageBillDate(createdDate);
+    setManageBillPay(o.payment_method || 'cash');
+  };
+
+  const saveManageBill = async () => {
+    if (!manageBillOrder) return;
+    if (!manageBillCart.length) { toast('Add at least one item', 'er'); return; }
+    setManageBillWorking(true);
+    try {
+      const d = await manageBill(manageBillOrder.id, {
+        items: manageBillCart,
+        override_date: manageBillDate || null,
+        payment_method: manageBillPay,
+      });
+      if (d.success) {
+        toast('Bill updated ✅', 'ok');
+        setManageBillOrder(null);
+        // Refresh list
+        const from2 = manageSearchDate ? manageSearchDate.slice(0,8)+'01' : manageSearchDate;
+        const d2 = await getOrdersList({ from: from2||manageSearchDate, to: manageSearchDate, status:'paid', limit:200 });
+        if (d2.success) setManageOrdersList(d2.data);
+        await load();
+      } else toast(d.message||'Failed', 'er');
+    } catch { toast('Error', 'er'); }
+    finally { setManageBillWorking(false); }
   };
 
   // ── Pay ───────────────────────────────────────────────
@@ -649,6 +773,7 @@ export default function SalesPage() {
               {connected ? 'Live' : 'Offline'}
             </div>
             <button className="btn-c" onClick={() => { setTableForm({ table_number: '', table_name: '', capacity: 4, section: 'Main Hall' }); setEditTableModal(null); setTableModal(true); }}>+ Add Table</button>
+            <button className="btn-c" onClick={openManageBill}>📋 Manage Bills</button>
             <button className="btn-p" onClick={() => { setSelectedTable(null); setCurrentOrder(null); setCart([]); setOrderType('parcel'); setActiveView('pos'); }}>📦 New Parcel</button>
           </div>
         </div>
@@ -710,6 +835,132 @@ export default function SalesPage() {
             <div><label className="mlabel">Section</label><input className="mfi" placeholder="Main Hall" value={tableForm.section} onChange={e => setTableForm(f => ({ ...f, section: e.target.value }))} /></div>
           </div>
         </Modal>
+      {/* ── Manage Bills Modal ────────────────────────────── */}
+      <Modal show={manageBillModal} onClose={() => { setManageBillModal(false); setManageBillOrder(null); }}
+        title={manageBillOrder ? `✏️ Edit Bill — ${manageBillOrder.order_number}` : '📋 Manage Bills'}
+        subtitle={manageBillOrder ? 'Change items, date, or payment method' : 'Find and edit paid bills'}
+        wide
+        footer={manageBillOrder ? (
+          <>
+            <button className="btn-c" onClick={() => setManageBillOrder(null)}>← Back</button>
+            <button className="btn-p" onClick={saveManageBill} disabled={manageBillWorking}>
+              {manageBillWorking ? '⏳ Saving…' : '✅ Save Changes'}
+            </button>
+          </>
+        ) : (
+          <button className="btn-c" onClick={() => setManageBillModal(false)}>Close</button>
+        )}>
+
+        {!manageBillOrder ? (
+          <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+            {/* Search */}
+            <div style={{ display:'flex', gap:8 }}>
+              <input className="mfi" placeholder="Search order #, customer…"
+                value={manageSearchText} onChange={e => setManageSearchText(e.target.value)}
+                style={{ flex:1 }} />
+              <input className="mfi" type="date" value={manageSearchDate}
+                onChange={async e => {
+                  setManageSearchDate(e.target.value);
+                  const from = e.target.value.slice(0,8)+'01';
+                  const d = await getOrdersList({ from, to: e.target.value, status:'paid', limit:200 });
+                  if (d.success) setManageOrdersList(d.data);
+                }} style={{ width:150 }} />
+            </div>
+            {/* Orders list */}
+            <div style={{ maxHeight:420, overflowY:'auto', display:'flex', flexDirection:'column', gap:6 }}>
+              {manageOrdersList
+                .filter(o => !manageSearchText || o.order_number?.includes(manageSearchText) || (o.customer_name||'').toLowerCase().includes(manageSearchText.toLowerCase()))
+                .map(o => (
+                <div key={o.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', border:'1.5px solid var(--border)', borderRadius:10, cursor:'pointer', background:'var(--surface)' }}
+                  onClick={() => openManageEdit(o)}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:700, fontSize:13 }}>{o.order_number} · {o.customer_name||'—'}</div>
+                    <div style={{ fontSize:11, color:'var(--ink2)' }}>{o.date} · {o.payment_method?.toUpperCase()} · {o.order_type}</div>
+                  </div>
+                  <div style={{ fontWeight:800, color:'var(--accent)', fontSize:14 }}>{fmtCur(o.total_amount)}</div>
+                  <span style={{ fontSize:11, color:'var(--accent)' }}>✏️ Edit</span>
+                </div>
+              ))}
+              {manageOrdersList.length === 0 && <div style={{ padding:24, textAlign:'center', color:'var(--ink2)' }}>No paid orders found</div>}
+            </div>
+          </div>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+            {/* Date + payment */}
+            <div style={{ display:'flex', gap:12 }}>
+              <div style={{ flex:1 }}>
+                <label className="mlabel">📅 Bill Date</label>
+                <input className="mfi" type="date" value={manageBillDate} onChange={e => setManageBillDate(e.target.value)} />
+              </div>
+              <div style={{ flex:1 }}>
+                <label className="mlabel">💳 Payment Method</label>
+                <div style={{ display:'flex', gap:6, marginTop:2 }}>
+                  {['cash','upi','card','other'].map(pm => (
+                    <button key={pm} type="button"
+                      className={'topt' + (manageBillPay===pm?' sel':'')}
+                      style={{ flex:1 }} onClick={() => setManageBillPay(pm)}>
+                      <div className="tname" style={{ fontSize:11 }}>{pm==='cash'?'💵':pm==='card'?'💳':pm==='upi'?'📱':'🔄'} {pm}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {/* Cart editor */}
+            <div>
+              <label className="mlabel">🍽️ Items</label>
+              <div style={{ display:'flex', flexDirection:'column', gap:6, marginTop:6 }}>
+                {manageBillCart.map((item, idx) => (
+                  <div key={idx} style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:8, background:'var(--surface)' }}>
+                    <div style={{ flex:1, fontSize:13, fontWeight:600 }}>{item.item_name}</div>
+                    <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                      <button style={{ width:26, height:26, borderRadius:6, border:'1.5px solid var(--border)', background:'var(--bg)', cursor:'pointer', fontSize:14, fontWeight:800, color:'#e84a5f' }}
+                        onClick={() => { if(item.quantity<=1){setManageBillCart(c=>c.filter((_,i)=>i!==idx));}else{setManageBillCart(c=>{const n=[...c];n[idx]={...n[idx],quantity:n[idx].quantity-1};return n;});} }}>−</button>
+                      <span style={{ width:24, textAlign:'center', fontWeight:800 }}>{item.quantity}</span>
+                      <button style={{ width:26, height:26, borderRadius:6, border:'1.5px solid var(--border)', background:'var(--bg)', cursor:'pointer', fontSize:14, fontWeight:800, color:'#1db97e' }}
+                        onClick={() => setManageBillCart(c=>{const n=[...c];n[idx]={...n[idx],quantity:n[idx].quantity+1};return n;})}>+</button>
+                    </div>
+                    <span style={{ fontWeight:700, width:70, textAlign:'right', fontSize:13 }}>{fmtCur(item.unit_price * item.quantity)}</span>
+                    <button style={{ background:'none', border:'none', cursor:'pointer', color:'#e84a5f', fontSize:16, padding:'0 2px' }}
+                      onClick={() => setManageBillCart(c=>c.filter((_,i)=>i!==idx))}>✕</button>
+                  </div>
+                ))}
+              </div>
+              {/* Add from menu */}
+              <div style={{ marginTop:8 }}>
+                <label className="mlabel">+ Add item from menu</label>
+                <select className="mfi" onChange={e => {
+                  const id = parseInt(e.target.value);
+                  if (!id) return;
+                  const mi = menuItems.find(m => m.id === id);
+                  if (!mi) return;
+                  setManageBillCart(c => {
+                    const idx = c.findIndex(x => x.menu_item_id === mi.id);
+                    if (idx >= 0) { const n=[...c]; n[idx]={...n[idx],quantity:n[idx].quantity+1}; return n; }
+                    return [...c, { menu_item_id:mi.id, item_name:mi.name, quantity:1, unit_price:parseFloat(mi.selling_price), gst_percent:parseFloat(mi.gst_percent)||0 }];
+                  });
+                  e.target.value = '';
+                }}>
+                  <option value="">— Pick item —</option>
+                  {menuItems.map(m => <option key={m.id} value={m.id}>{m.name} — {fmtCur(m.selling_price)}</option>)}
+                </select>
+              </div>
+            </div>
+            {/* Total */}
+            <div style={{ background:'var(--bg)', borderRadius:10, padding:'10px 14px' }}>
+              {(() => {
+                const sub = manageBillCart.reduce((s,i)=>s+i.unit_price*i.quantity,0);
+                const gst = manageBillCart.reduce((s,i)=>s+i.unit_price*i.quantity*(i.gst_percent/100),0);
+                return <>
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--ink2)' }}><span>Subtotal</span><span>{fmtCur(sub)}</span></div>
+                  {gst>0 && <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--ink2)' }}><span>GST</span><span>{fmtCur(gst)}</span></div>}
+                  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:800, fontSize:15, marginTop:6, color:'var(--accent)' }}><span>Total</span><span>{fmtCur(sub+gst)}</span></div>
+                </>;
+              })()}
+            </div>
+          </div>
+        )}
+      </Modal>
+
         <ConfirmModal show={!!deleteTableModal} onClose={() => setDeleteTableModal(null)} onConfirm={delTable}
           title="Remove Table" message={`Remove table ${deleteTableModal?.table_number}?`} />
       </div>
@@ -901,7 +1152,44 @@ export default function SalesPage() {
             </div>
           )}
 
-          {!hasNewItems && !kotSentItems.length && (
+          {/* Saved items (not yet KOT'd) — visible after Save, before KOT */}
+          {(() => {
+            const savedItems = currentOrder
+              ? (currentOrder.items || []).filter(i => !i.kot_sent)
+              : [];
+            if (savedItems.length === 0 || cart.length > 0) return null;
+            return (
+              <div className="pos-kot-section" style={{ borderLeft: '3px solid #2196f3' }}>
+                <div className="pos-section-label pos-kot-header" style={{ color: '#1976d2' }}>
+                  <span>💾 Saved <span className="kot-count" style={{ background: '#2196f3' }}>{savedItems.length}</span></span>
+                  <span style={{ fontSize: 10, color: 'var(--ink2)' }}>Send KOT to confirm</span>
+                </div>
+                {savedItems.map((item) => (
+                  <div key={item.id} className="kot-item-row" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div className="kir-name" style={{ flex: 1 }}>{item.item_name}</div>
+                    <div className="kir-qty">× {item.quantity}</div>
+                    <div className="kir-price">{fmtCur(parseFloat(item.unit_price) * item.quantity)}</div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const r = await deleteOrderItem(currentOrder.id, item.id);
+                          if (r.success !== false) {
+                            const od = await getOrder(currentOrder.id);
+                            if (od.success) setCurrentOrder(od.data);
+                            toast('Item removed', 'ok');
+                          } else toast(r.message || 'Failed to remove', 'er');
+                        } catch { toast('Error removing item', 'er'); }
+                      }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e53935', fontSize: 14, padding: '2px 4px', lineHeight: 1, flexShrink: 0 }}
+                      title="Remove item"
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {!hasNewItems && !kotSentItems.length && !(currentOrder?.items?.some(i => !i.kot_sent)) && (
             <div className="pos-empty">Tap items on the left to add</div>
           )}
 
@@ -925,7 +1213,7 @@ export default function SalesPage() {
           {/* Action buttons */}
           <div className="pos-actions">
             {hasNewItems && (
-              <button className="btn-c pos-act-btn" onClick={saveOrder}>💾 Save</button>
+              <button className="btn-c pos-act-btn" onClick={() => saveOrder()}>💾 Save</button>
             )}
             {(hasNewItems || (currentOrder && !cart.length)) && (
               <button className="pos-act-btn pos-kot-btn" onClick={doKOT}>🔥 KOT</button>
@@ -1091,6 +1379,11 @@ export default function SalesPage() {
             </div>
           </div>
           <div><label className="mlabel">Notes</label><input className="mfi" placeholder="Any bill notes…" value={billForm.notes} onChange={e => setBillForm(f => ({ ...f, notes: e.target.value }))} /></div>
+          <div>
+            <label className="mlabel">📅 Bill Date <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--ink2)' }}>(default: today — change for past/future)</span></label>
+            <input className="mfi" type="date" value={billForm.override_date}
+              onChange={e => setBillForm(f => ({ ...f, override_date: e.target.value }))} />
+          </div>
         </div>
       </Modal>
 
@@ -1149,6 +1442,8 @@ export default function SalesPage() {
           </div>
         </div>
       </Modal>
+
+
 
       <ConfirmModal show={cancelModal} onClose={() => setCancelModal(false)} onConfirm={doCancel}
         title="Cancel Order" message="Cancel this order? This cannot be undone." />
