@@ -39,6 +39,7 @@ router.get('/menu', async (req, res) => {
         mi.gst_percent,
         mi.is_veg,
         mi.description     AS item_description,
+        mi.image_url,
         mi.is_active       AS item_is_active,
         mc.name            AS course_name,
         mc.icon            AS course_icon,

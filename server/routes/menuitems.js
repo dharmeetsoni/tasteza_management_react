@@ -8,7 +8,11 @@ router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(`
       SELECT mi.*, mc.name AS course_name, mc.icon AS course_icon, mc.color AS course_color,
-             r.name AS recipe_name, r.cost_per_unit AS recipe_cost_per_unit
+             r.name AS recipe_name, r.cost_per_unit AS recipe_cost_per_unit,
+             CASE WHEN mi.recipe_id IS NOT NULL
+               THEN ROUND(r.salary_total_cost / NULLIF(IF(r.is_master, r.yield_qty, r.serves), 0), 4)
+               ELSE 0
+             END AS staff_cost_per_serve
       FROM   menu_items mi
       LEFT JOIN menu_courses mc ON mi.course_id = mc.id
       LEFT JOIN recipes      r  ON mi.recipe_id = r.id
@@ -24,7 +28,11 @@ router.get('/all', async (req, res) => {
       SELECT mi.*,
              mc.name AS course_name, mc.icon AS course_icon, mc.color AS course_color,
              r.name AS recipe_name,
-             CASE WHEN mi.recipe_id IS NOT NULL THEN r.cost_per_unit ELSE mi.cost_price END AS cost_price
+             CASE WHEN mi.recipe_id IS NOT NULL THEN r.cost_per_unit ELSE mi.cost_price END AS cost_price,
+             CASE WHEN mi.recipe_id IS NOT NULL
+               THEN ROUND(r.salary_total_cost / NULLIF(IF(r.is_master, r.yield_qty, r.serves), 0), 4)
+               ELSE 0
+             END AS staff_cost_per_serve
       FROM menu_items mi
       LEFT JOIN menu_courses mc ON mi.course_id = mc.id
       LEFT JOIN recipes r ON mi.recipe_id = r.id
@@ -48,7 +56,7 @@ router.post('/', async (req, res) => {
   try {
     const { name, course_id, selling_price, cost_price, gst_percent,
             price_includes_gst, is_veg, recipe_id, description,
-            discount_applicable, is_parcel_available } = req.body;
+            discount_applicable, is_parcel_available, image_url } = req.body;
     if (!name || !course_id || !selling_price)
       return res.status(400).json({ success: false, message: 'Name, course and selling price are required.' });
 
@@ -70,11 +78,11 @@ router.post('/', async (req, res) => {
     }
 
     const [r] = await db.query(
-      `INSERT INTO menu_items (name,course_id,selling_price,price_with_gst,cost_price,gst_percent,price_includes_gst,is_veg,recipe_id,description,is_active,discount_applicable,is_parcel_available)
-       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO menu_items (name,course_id,selling_price,price_with_gst,cost_price,gst_percent,price_includes_gst,is_veg,recipe_id,description,image_url,is_active,discount_applicable,is_parcel_available)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [name.trim(), parseInt(course_id), basePrice, finalPrice, costPrice,
        gst, price_includes_gst?1:0, is_veg?1:0,
-       recipe_id?parseInt(recipe_id):null, description||null,
+       recipe_id?parseInt(recipe_id):null, description||null, image_url||null,
        discount_applicable!==false?1:0, is_parcel_available!==false?1:0]
     );
     res.status(201).json({ success: true, data: { id: r.insertId } });
@@ -88,7 +96,7 @@ router.put('/:id', async (req, res) => {
   try {
     const { name, course_id, selling_price, cost_price, gst_percent,
             price_includes_gst, is_veg, recipe_id, description,
-            discount_applicable, is_parcel_available } = req.body;
+            discount_applicable, is_parcel_available, image_url } = req.body;
     if (!name || !course_id || !selling_price)
       return res.status(400).json({ success: false, message: 'Name, course and selling price are required.' });
 
@@ -110,10 +118,10 @@ router.put('/:id', async (req, res) => {
     }
 
     const [r] = await db.query(
-      `UPDATE menu_items SET name=?,course_id=?,selling_price=?,price_with_gst=?,cost_price=?,gst_percent=?,price_includes_gst=?,is_veg=?,recipe_id=?,description=?,discount_applicable=?,is_parcel_available=? WHERE id=?`,
+      `UPDATE menu_items SET name=?,course_id=?,selling_price=?,price_with_gst=?,cost_price=?,gst_percent=?,price_includes_gst=?,is_veg=?,recipe_id=?,description=?,image_url=?,discount_applicable=?,is_parcel_available=? WHERE id=?`,
       [name.trim(), parseInt(course_id), basePrice, finalPrice, costPrice,
        gst, price_includes_gst?1:0, is_veg?1:0,
-       recipe_id?parseInt(recipe_id):null, description||null,
+       recipe_id?parseInt(recipe_id):null, description||null, image_url!==undefined?image_url:null,
        discount_applicable!==false?1:0, is_parcel_available!==false?1:0, req.params.id]
     );
     if (!r.affectedRows) return res.status(404).json({ success: false, message: 'Not found.' });

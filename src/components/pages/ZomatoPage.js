@@ -177,6 +177,7 @@ export default function ZomatoPage() {
   const [predDiscount,   setPredDiscount]   = useState(20);
   const [predMargin,     setPredMargin]     = useState(30);
   const [predCustomDisc, setPredCustomDisc] = useState('');
+  const [predIncludeStaff, setPredIncludeStaff] = useState(true);
 
   const commission = parseFloat(settings.commission_pct) || 22;
   const discount   = parseFloat(settings.active_discount) || 0;
@@ -462,8 +463,12 @@ export default function ZomatoPage() {
                         return (
                           <tr key={item.id} style={{ borderBottom: '1px solid var(--border)', opacity: item.is_available ? 1 : 0.5 }}>
                             <td style={{ padding: '12px 16px' }}>
-                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                                <span style={{ marginTop: 2 }}>{item.is_veg ? '🟢' : '🔴'}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <div style={{ width: 44, height: 44, borderRadius: 8, overflow: 'hidden', flexShrink: 0, border: '1px solid var(--border)', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  {item.image_url
+                                    ? <img src={item.image_url} alt={item.item_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                    : <span style={{ fontSize: 22 }}>🍽️</span>}
+                                </div>
                                 <div>
                                   <div style={{ fontWeight: 700, fontSize: 13 }}>
                                     {item.zomato_item_name || item.item_name}
@@ -557,10 +562,24 @@ export default function ZomatoPage() {
                   value={predCustomDisc} onChange={e => setPredCustomDisc(e.target.value)} />
               </div>
             </div>
+            <div style={{ background: 'var(--surface)', border: '1.5px solid var(--border)', borderRadius: 14, padding: '14px 18px', minWidth: 200, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink2)', textTransform: 'uppercase' }}>👥 Base Price Calculation</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div
+                  onClick={() => setPredIncludeStaff(v => !v)}
+                  style={{ width: 44, height: 24, borderRadius: 12, background: predIncludeStaff ? 'var(--accent)' : 'var(--border)', cursor: 'pointer', position: 'relative', transition: 'background .2s', flexShrink: 0 }}>
+                  <div style={{ position: 'absolute', top: 3, left: predIncludeStaff ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .2s', boxShadow: '0 1px 4px rgba(0,0,0,.2)' }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>{predIncludeStaff ? 'With Staff Salary' : 'Without Staff Salary'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{predIncludeStaff ? 'Cost includes staff wages' : 'Cost excludes staff wages'}</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>Required Zomato price for {predMargin}% margin @ {parseFloat(predCustomDisc) || predDiscount}% discount · {commission}% commission</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Required Zomato price for {predMargin}% margin @ {parseFloat(predCustomDisc) || predDiscount}% discount · {commission}% commission{!predIncludeStaff ? ' · excl. staff' : ''}</div>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -568,9 +587,10 @@ export default function ZomatoPage() {
                   <tr style={{ background: 'rgba(0,0,0,.02)', fontSize: 11, color: 'var(--ink2)', fontWeight: 700 }}>
                     <th style={{ padding: '10px 16px', textAlign: 'left' }}>Item</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center' }}>Cost</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>Base Price</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'center', color: 'var(--accent)' }}>Recommended Listed</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>Menu Price</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center' }}>Markup</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center', color: 'var(--accent)' }}>Recommended Zomato Price</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center', color: '#1db97e' }}>Set Zomato Price</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center' }}>Cust Pays</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center' }}>You Receive</th>
                     <th style={{ padding: '10px 12px', textAlign: 'center' }}>Profit</th>
@@ -579,7 +599,9 @@ export default function ZomatoPage() {
                 </thead>
                 <tbody>
                   {allItems.map(item => {
-                    const cost = parseFloat(item.cost_price) || parseFloat(item.selling_price) * 0.4;
+                    const rawCost = parseFloat(item.cost_price) || parseFloat(item.selling_price) * 0.4;
+                    const staffCostPerServe = parseFloat(item.staff_cost_per_serve) || 0;
+                    const cost = predIncludeStaff ? rawCost : Math.max(0, rawCost - staffCostPerServe);
                     const d = parseFloat(predCustomDisc) || predDiscount;
                     const listed = smartRound(predictListedPrice({ costPrice: cost, targetMargin: predMargin, commission, discount: d }));
                     const calc = calcZomato({ listedPrice: listed, costPrice: cost, commission, discount: d });
@@ -589,18 +611,32 @@ export default function ZomatoPage() {
                     return (
                       <tr key={item.id} style={{ borderBottom: '1px solid var(--border)' }}>
                         <td style={{ padding: '10px 16px' }}>
-                          <span>{item.is_veg ? '🟢' : '🔴'}</span>
-                          <strong style={{ marginLeft: 6 }}>{item.name}</strong>
-                          <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.course_name}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ width: 40, height: 40, borderRadius: 8, overflow: 'hidden', flexShrink: 0, border: '1px solid var(--border)', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              {item.image_url
+                                ? <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                : <span style={{ fontSize: 22 }}>🍽️</span>}
+                            </div>
+                            <div>
+                              <strong>{item.name}</strong>
+                              <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.course_name}</div>
+                            </div>
+                          </div>
                         </td>
                         <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)' }}>
                           {fmtCur(cost)}{!item.cost_price && <span style={{ fontSize: 9, color: '#b07a00' }}> est.</span>}
+                          {!predIncludeStaff && staffCostPerServe > 0 && <div style={{ fontSize: 9, color: '#1db97e' }}>excl. staff</div>}
                         </td>
-                        <td style={{ padding: '8px 12px', textAlign: 'center' }}>{fmtCur(item.selling_price)}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)' }}>{fmtCur(item.selling_price)}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)', fontSize: 12 }}>+{markup.toFixed(0)}%</td>
                         <td style={{ padding: '8px 12px', textAlign: 'center' }}>
                           <span style={{ fontWeight: 900, fontSize: 15, color: 'var(--accent)' }}>{fmtCur(listed)}</span>
                         </td>
-                        <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)', fontSize: 12 }}>+{markup.toFixed(0)}%</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'center' }}>
+                          {onZomato
+                            ? <span style={{ fontWeight: 800, fontSize: 14, color: '#1db97e' }}>{fmtCur(onZomato.listed_price)}</span>
+                            : <span style={{ fontSize: 12, color: '#aaa' }}>—</span>}
+                        </td>
                         <td style={{ padding: '8px 12px', textAlign: 'center' }}>{fmtCur(calc.customerPays)}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700 }}>{fmtCur(calc.youReceive)}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700, color: calc.profit >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtCur(calc.profit)}</td>
@@ -790,8 +826,12 @@ export default function ZomatoPage() {
                           <input type="checkbox" checked={!!sel.selected} onChange={() => toggleAddSelect(item.id)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
                         </td>
                         <td style={{ padding: '10px 14px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <span>{item.is_veg ? '🟢' : '🔴'}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ width: 36, height: 36, borderRadius: 6, overflow: 'hidden', flexShrink: 0, border: '1px solid var(--border)', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              {item.image_url
+                                ? <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                : <span style={{ fontSize: 22 }}>🍽️</span>}
+                            </div>
                             <div>
                               <strong style={{ fontSize: 13 }}>{item.name}</strong>
                               <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.course_name}</div>
@@ -801,6 +841,7 @@ export default function ZomatoPage() {
                         <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)' }}>{fmtCur(item.selling_price)}</td>
                         <td style={{ padding: '8px 12px', textAlign: 'center', color: 'var(--ink2)' }}>
                           {fmtCur(cost)}{!item.cost_price && <span style={{ fontSize: 9, color: '#b07a00' }}> est.</span>}
+                          {!predIncludeStaff && staffCostPerServe > 0 && <div style={{ fontSize: 9, color: '#1db97e' }}>excl. staff</div>}
                         </td>
                         <td style={{ padding: '8px 14px', textAlign: 'center' }}>
                           <div style={{ display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'center' }}>

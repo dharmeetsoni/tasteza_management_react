@@ -5,7 +5,7 @@ import { fmtCur } from '../../utils';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
 
-const EMPTY = { name: '', course_id: '', selling_price: '', price_with_gst: '', cost_price: '', gst_percent: '0', price_includes_gst: false, is_veg: false, recipe_id: '', description: '', discount_applicable: true, is_parcel_available: true };
+const EMPTY = { name: '', course_id: '', selling_price: '', price_with_gst: '', cost_price: '', gst_percent: '0', price_includes_gst: false, is_veg: false, recipe_id: '', description: '', discount_applicable: true, is_parcel_available: true, image_url: '' };
 
 const GST_PRESETS = [0, 5, 12, 18, 28];
 
@@ -53,7 +53,7 @@ export default function MenuItemsPage() {
 
   const openModal = (item = null) => {
     setEditing(item);
-    setForm(item ? { name: item.name, course_id: item.course_id, selling_price: item.selling_price, price_with_gst: item.price_with_gst || '', cost_price: item.cost_price || '', gst_percent: item.gst_percent || '0', price_includes_gst: !!item.price_includes_gst, is_veg: !!item.is_veg, recipe_id: item.recipe_id || '', description: item.description || '', discount_applicable: item.discount_applicable !== 0, is_parcel_available: item.is_parcel_available !== 0 } : EMPTY);
+    setForm(item ? { name: item.name, course_id: item.course_id, selling_price: item.selling_price, price_with_gst: item.price_with_gst || '', cost_price: item.cost_price || '', gst_percent: item.gst_percent || '0', price_includes_gst: !!item.price_includes_gst, is_veg: !!item.is_veg, recipe_id: item.recipe_id || '', description: item.description || '', discount_applicable: item.discount_applicable !== 0, is_parcel_available: item.is_parcel_available !== 0, image_url: item.image_url || '' } : EMPTY);
     setModal(true);
   };
 
@@ -193,8 +193,10 @@ export default function MenuItemsPage() {
                 return (
                   <div key={i.id} className="inv-card" style={{ borderTop: '3px solid ' + (course?.color || 'var(--accent)') }}>
                     <div className="inv-card-top">
-                      <div style={{ width: 48, height: 48, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, background: (course?.color || '#e8572a') + '18', flexShrink: 0 }}>
-                        {course?.icon || '🍽️'}
+                      <div style={{ width: 56, height: 56, borderRadius: 12, overflow: 'hidden', flexShrink: 0, border: '1.5px solid var(--border)', background: (course?.color || '#e8572a') + '18', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {i.image_url
+                          ? <img src={i.image_url} alt={i.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <span style={{ fontSize: 26 }}>🍽️</span>}
                       </div>
                       <div className="inv-card-info">
                         <h4><span style={{ marginRight: 5 }}>{i.is_veg ? '🟢' : '🔴'}</span>{i.name}</h4>
@@ -424,6 +426,31 @@ export default function MenuItemsPage() {
           <div className="mfull">
             <label className="mlabel">Description</label>
             <textarea className="mfi" rows={2} placeholder="Optional description" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+          </div>
+          <div className="mfull">
+            <label className="mlabel">Item Image</label>
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+              <div style={{ width: 80, height: 80, borderRadius: 12, overflow: 'hidden', border: '2px dashed var(--border)', flexShrink: 0, background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {form.image_url
+                  ? <img src={form.image_url} alt="item" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <span style={{ fontSize: 28 }}>🍽️</span>}
+              </div>
+              <div style={{ flex: 1 }}>
+                <input type="file" accept="image/*" id="mi-img-upload" style={{ display: 'none' }}
+                  onChange={e => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = ev => setForm(f => ({ ...f, image_url: ev.target.result }));
+                    reader.readAsDataURL(file);
+                  }} />
+                <button type="button" className="bsm be" onClick={() => document.getElementById('mi-img-upload').click()}>📷 {form.image_url ? 'Change Image' : 'Add Image'}</button>
+                {form.image_url && (
+                  <button type="button" className="bsm bd" style={{ marginLeft: 8 }} onClick={() => setForm(f => ({ ...f, image_url: '' }))}>✕ Remove</button>
+                )}
+                <div style={{ fontSize: 11, color: 'var(--ink2)', marginTop: 6 }}>JPG, PNG, WebP</div>
+              </div>
+            </div>
           </div>
         </div>
       </Modal>
