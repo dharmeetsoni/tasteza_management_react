@@ -112,23 +112,14 @@ router.patch('/:id/items/:itemId/status', async (req, res) => {
 
     await db.query('UPDATE kot_items SET status=? WHERE id=?', [status, req.params.itemId]);
 
-    // Auto-advance KOT ticket status based on all item statuses
-    const [allItems] = await db.query('SELECT status FROM kot_items WHERE kot_id=?', [req.params.id]);
-    const statuses = allItems.map(i => i.status);
-    let kotStatus = null;
-    if (statuses.every(s => s === 'served'))       kotStatus = 'served';
-    else if (statuses.every(s => s === 'ready' || s === 'served')) kotStatus = 'ready';
-    else if (statuses.some(s => s === 'preparing' || s === 'ready')) kotStatus = 'preparing';
-
-    if (kotStatus) {
-      await db.query('UPDATE kot_tickets SET status=? WHERE id=?', [kotStatus, req.params.id]);
-    }
+    // KOT ticket status is NOT auto-changed here.
+    // The whole KOT moves only when the chef taps the KOT-level action button (PATCH /:id/status).
+    // Item status is purely informational — each dish tracks its own progress independently.
 
     const payload = {
-      kot_id:   parseInt(req.params.id),
-      item_id:  parseInt(req.params.itemId),
+      kot_id:    parseInt(req.params.id),
+      item_id:   parseInt(req.params.itemId),
       status,
-      kot_status: kotStatus,
       kot_number: item.kot_number,
     };
 

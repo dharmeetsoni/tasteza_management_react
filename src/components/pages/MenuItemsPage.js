@@ -5,7 +5,13 @@ import { fmtCur } from '../../utils';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
 
-const EMPTY = { name: '', course_id: '', selling_price: '', price_with_gst: '', cost_price: '', gst_percent: '0', price_includes_gst: false, is_veg: false, recipe_id: '', description: '', discount_applicable: true, is_parcel_available: true, image_url: '' };
+const EMPTY = { name: '', course_id: '', selling_price: '', price_with_gst: '', cost_price: '', gst_percent: '0', price_includes_gst: false, is_veg: false, spice_level: 0, recipe_id: '', description: '', discount_applicable: true, is_parcel_available: true, image_url: '' };
+
+const SPICE_LEVELS = [
+  { value: 0, label: 'No Spice',  icons: '—',    tip: 'Not spicy at all' },
+  { value: 1, label: 'Medium',    icons: '🌶️',   tip: 'Mild to medium heat' },
+  { value: 2, label: 'Hot',       icons: '🌶️🌶️', tip: 'Hot & spicy' },
+];
 
 const GST_PRESETS = [0, 5, 12, 18, 28];
 
@@ -53,7 +59,7 @@ export default function MenuItemsPage() {
 
   const openModal = (item = null) => {
     setEditing(item);
-    setForm(item ? { name: item.name, course_id: item.course_id, selling_price: item.selling_price, price_with_gst: item.price_with_gst || '', cost_price: item.cost_price || '', gst_percent: item.gst_percent || '0', price_includes_gst: !!item.price_includes_gst, is_veg: !!item.is_veg, recipe_id: item.recipe_id || '', description: item.description || '', discount_applicable: item.discount_applicable !== 0, is_parcel_available: item.is_parcel_available !== 0, image_url: item.image_url || '' } : EMPTY);
+    setForm(item ? { name: item.name, course_id: item.course_id, selling_price: item.selling_price, price_with_gst: item.price_with_gst || '', cost_price: item.cost_price || '', gst_percent: item.gst_percent || '0', price_includes_gst: !!item.price_includes_gst, is_veg: !!item.is_veg, spice_level: item.spice_level ?? 0, recipe_id: item.recipe_id || '', description: item.description || '', discount_applicable: item.discount_applicable !== 0, is_parcel_available: item.is_parcel_available !== 0, image_url: item.image_url || '' } : EMPTY);
     setModal(true);
   };
 
@@ -157,7 +163,14 @@ export default function MenuItemsPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <span>{i.is_veg ? '🟢' : '🔴'}</span>
                             <div>
-                              <strong>{i.name}</strong>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <strong>{i.name}</strong>
+                                {i.spice_level > 0 && (
+                                  <span title={SPICE_LEVELS[i.spice_level]?.tip} style={{ fontSize: 13, lineHeight: 1 }}>
+                                    {SPICE_LEVELS[i.spice_level]?.icons}
+                                  </span>
+                                )}
+                              </div>
                               {i.recipe_name && <div style={{ fontSize: 11, color: 'var(--ink2)' }}>📋 Recipe: {i.recipe_name}</div>}
                               {i.recipe_name && <div style={{ fontSize: 11, color: '#1db97e', fontWeight:600 }}>📦 {i.recipe_name}</div>}
                             </div>
@@ -199,7 +212,16 @@ export default function MenuItemsPage() {
                           : <span style={{ fontSize: 26 }}>🍽️</span>}
                       </div>
                       <div className="inv-card-info">
-                        <h4><span style={{ marginRight: 5 }}>{i.is_veg ? '🟢' : '🔴'}</span>{i.name}</h4>
+                        <h4>
+                          <span style={{ marginRight: 5 }}>{i.is_veg ? '🟢' : '🔴'}</span>
+                          {i.name}
+                          {i.spice_level > 0 && (
+                            <span title={SPICE_LEVELS[i.spice_level]?.tip}
+                              style={{ marginLeft: 6, fontSize: 13 }}>
+                              {SPICE_LEVELS[i.spice_level]?.icons}
+                            </span>
+                          )}
+                        </h4>
                         <p>{i.course_icon} {i.course_name}</p>
                       </div>
                       <span className={`badge ${i.is_active ? 'on' : 'off'}`}>{i.is_active ? '✓' : '✕'}</span>
@@ -414,6 +436,42 @@ export default function MenuItemsPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12 }}>
             <input type="checkbox" id="isVeg" checked={form.is_veg} onChange={e => setForm(f => ({ ...f, is_veg: e.target.checked }))} style={{ width: 18, height: 18 }} />
             <label htmlFor="isVeg" style={{ fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>🟢 Vegetarian</label>
+          </div>
+
+          {/* Spice level picker */}
+          <div style={{ padding: '4px 12px 12px' }}>
+            <label className="mlabel" style={{ marginBottom: 8, display: 'block' }}>🌶️ Spice Level</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {SPICE_LEVELS.map(sl => {
+                const active = form.spice_level === sl.value;
+                return (
+                  <button
+                    key={sl.value}
+                    type="button"
+                    title={sl.tip}
+                    onClick={() => setForm(f => ({ ...f, spice_level: sl.value }))}
+                    style={{
+                      flex: 1, padding: '10px 8px', borderRadius: 10, cursor: 'pointer',
+                      border: `2px solid ${active ? (sl.value === 0 ? '#94a3b8' : sl.value === 1 ? '#f97316' : '#e84a5f') : 'var(--border)'}`,
+                      background: active
+                        ? sl.value === 0 ? 'rgba(148,163,184,.12)' : sl.value === 1 ? 'rgba(249,115,22,.1)' : 'rgba(232,74,95,.1)'
+                        : 'var(--bg)',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                      transition: 'all .12s', fontFamily: 'inherit',
+                    }}>
+                    <span style={{ fontSize: sl.value === 0 ? 18 : 16, lineHeight: 1.2 }}>
+                      {sl.value === 0 ? '🚫' : sl.icons}
+                    </span>
+                    <span style={{
+                      fontSize: 11, fontWeight: 700,
+                      color: active
+                        ? sl.value === 0 ? '#64748b' : sl.value === 1 ? '#f97316' : '#e84a5f'
+                        : 'var(--ink2)',
+                    }}>{sl.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12 }}>
             <input type="checkbox" id="discountApp" checked={!!form.discount_applicable} onChange={e => setForm(f => ({ ...f, discount_applicable: e.target.checked }))} style={{ width: 18, height: 18 }} />

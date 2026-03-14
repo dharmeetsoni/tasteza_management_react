@@ -33,12 +33,13 @@ import ExpensesPage      from '../pages/ExpensesPage';
 import ExpenseCategoryManagerPage from '../pages/ExpenseCategoryManagerPage';
 import ConsumptionPage    from '../pages/ConsumptionPage';
 import QuotationPage      from '../pages/QuotationPage';
-import KDSPage           from '../pages/KDSPage';
-import DashboardPage     from '../pages/DashboardPage';
+import KDSPage            from '../pages/KDSPage';
+import DashboardPage      from '../pages/DashboardPage';
+import VendorPage         from '../pages/VendorPage';
 
 const ROLE_DEFAULTS = {
   admin:   ['*'],
-  manager: ['dashboard','sales','kot','orders','kds','coupons','zomato','inventory','purchaseorders','purchases',
+  manager: ['dashboard','sales','kot','orders','kds','coupons','zomato','inventory','purchaseorders','purchases','vendors',
              'categories','units','recipes','menuitems','courses','salary','fuel',
              'salarymgmt','expenses','expcategories','staff','reports','profitloss',
              'pastorder','consumption','quotation','billsettings','profile'],
@@ -57,6 +58,7 @@ const NAV = [
   { sep:true, id:'s0'  },
   { id:'inventory',      label:'Inventory',          icon:'📦', section:'STOCK'   },
   { id:'purchaseorders', label:'Purchase Orders',    icon:'📋'                    },
+  { id:'vendors',        label:'Vendors',            icon:'🏪'                    },
   { id:'purchases',      label:'Purchase History',   icon:'🛒'                    },
   { id:'categories',     label:'Categories',         icon:'🏷️'                    },
   { id:'units',          label:'Units',              icon:'⚖️'                    },
@@ -84,7 +86,7 @@ const NAV = [
 const PAGE_TITLES = {
   dashboard:'Dashboard',
   sales:'Sales & POS', kot:'KOT Manager', orders:'Order History', coupons:'Coupons', zomato:'Zomato Menu',
-  inventory:'Inventory', purchaseorders:'Purchase Orders', purchases:'Purchase History',
+  inventory:'Inventory', purchaseorders:'Purchase Orders', vendors:'Vendors', purchases:'Purchase History',
   categories:'Categories', units:'Units', recipes:'Recipes', menuitems:'Menu Items',
   kds:'KDS — Kitchen Display', courses:'Courses', salarymgmt:'Salary Manager', expenses:'Expense Manager', fuel:'Fuel Manager',
   staff:'Staff Management', reports:'Reports', billsettings:'Bill Settings', users:'Users & Access', profile:'My Profile',
@@ -155,6 +157,7 @@ export default function AppShell() {
       case 'zomato':         return <ZomatoPage />;
       case 'inventory':      return <InventoryPage />;
       case 'purchaseorders': return <PurchaseOrderPage />;
+      case 'vendors':        return <VendorPage />;
       case 'purchases':      return <PurchasesPage />;
       case 'categories':     return <CategoriesPage />;
       case 'units':          return <UnitsPage />;

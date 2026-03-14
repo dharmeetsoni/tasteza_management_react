@@ -48,6 +48,7 @@ app.use('/api/salaries',       require('./routes/salaries'));
 app.use('/api/fuels',          require('./routes/fuels'));
 app.use('/api/menuitems',      require('./routes/menuitems'));
 app.use('/api/purchaseorders', require('./routes/purchaseorders'));
+app.use('/api/vendors',        require('./routes/vendors'));
 app.use('/api/tables',         require('./routes/tables'));
 app.use('/api/coupons',        require('./routes/coupons'));
 app.use('/api/orders',         require('./routes/orders'));

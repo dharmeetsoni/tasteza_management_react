@@ -55,7 +55,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { name, course_id, selling_price, cost_price, gst_percent,
-            price_includes_gst, is_veg, recipe_id, description,
+            price_includes_gst, is_veg, spice_level, recipe_id, description,
             discount_applicable, is_parcel_available, image_url } = req.body;
     if (!name || !course_id || !selling_price)
       return res.status(400).json({ success: false, message: 'Name, course and selling price are required.' });
@@ -78,10 +78,10 @@ router.post('/', async (req, res) => {
     }
 
     const [r] = await db.query(
-      `INSERT INTO menu_items (name,course_id,selling_price,price_with_gst,cost_price,gst_percent,price_includes_gst,is_veg,recipe_id,description,image_url,is_active,discount_applicable,is_parcel_available)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO menu_items (name,course_id,selling_price,price_with_gst,cost_price,gst_percent,price_includes_gst,is_veg,spice_level,recipe_id,description,image_url,is_active,discount_applicable,is_parcel_available)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [name.trim(), parseInt(course_id), basePrice, finalPrice, costPrice,
-       gst, price_includes_gst?1:0, is_veg?1:0,
+       gst, price_includes_gst?1:0, is_veg?1:0, parseInt(spice_level)||0,
        recipe_id?parseInt(recipe_id):null, description||null, image_url||null,
        discount_applicable!==false?1:0, is_parcel_available!==false?1:0]
     );
@@ -95,7 +95,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { name, course_id, selling_price, cost_price, gst_percent,
-            price_includes_gst, is_veg, recipe_id, description,
+            price_includes_gst, is_veg, spice_level, recipe_id, description,
             discount_applicable, is_parcel_available, image_url } = req.body;
     if (!name || !course_id || !selling_price)
       return res.status(400).json({ success: false, message: 'Name, course and selling price are required.' });
@@ -118,9 +118,9 @@ router.put('/:id', async (req, res) => {
     }
 
     const [r] = await db.query(
-      `UPDATE menu_items SET name=?,course_id=?,selling_price=?,price_with_gst=?,cost_price=?,gst_percent=?,price_includes_gst=?,is_veg=?,recipe_id=?,description=?,image_url=?,discount_applicable=?,is_parcel_available=? WHERE id=?`,
+      `UPDATE menu_items SET name=?,course_id=?,selling_price=?,price_with_gst=?,cost_price=?,gst_percent=?,price_includes_gst=?,is_veg=?,spice_level=?,recipe_id=?,description=?,image_url=?,discount_applicable=?,is_parcel_available=? WHERE id=?`,
       [name.trim(), parseInt(course_id), basePrice, finalPrice, costPrice,
-       gst, price_includes_gst?1:0, is_veg?1:0,
+       gst, price_includes_gst?1:0, is_veg?1:0, parseInt(spice_level)||0,
        recipe_id?parseInt(recipe_id):null, description||null, image_url!==undefined?image_url:null,
        discount_applicable!==false?1:0, is_parcel_available!==false?1:0, req.params.id]
     );

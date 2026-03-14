@@ -183,11 +183,9 @@ export default function KDSPage() {
   });
   useWSEvent('kot_item_status', (p) => {
     if (!p?.kot_id) return;
-    setKots(prev => prev.map(k => {
-      if (k.id !== p.kot_id) return k;
-      const updated = { ...k, items: (k.items||[]).map(it => it.id === p.item_id ? { ...it, status: p.status } : it) };
-      if (p.kot_status) updated.status = p.kot_status;
-      return updated;
+    // Only update the specific item — never touch KOT ticket status from item events
+    setKots(prev => prev.map(k => k.id !== p.kot_id ? k : {
+      ...k, items: (k.items||[]).map(it => it.id === p.item_id ? { ...it, status: p.status } : it)
     }));
   });
   useWSEvent('order_created', () => load(true));
@@ -210,20 +208,14 @@ export default function KDSPage() {
   const changeItemStatus = async (kot, item, newStatus) => {
     const busyKey = `${kot.id}_${item.id}`;
     setUpdating(u => ({ ...u, [busyKey]: true }));
-    // Optimistic update
-    const applyItemStatus = (kots, kotStatus) => kots.map(k => {
-      if (k.id !== kot.id) return k;
-      const updated = { ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: newStatus } : it) };
-      if (kotStatus) updated.status = kotStatus;
-      return updated;
-    });
-    setKots(prev => applyItemStatus(prev, null));
+    // Optimistic: update only the item, never touch KOT ticket status
+    setKots(prev => prev.map(k => k.id !== kot.id ? k : {
+      ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: newStatus } : it)
+    }));
     try {
       const r = await updateKOTItemStatus(kot.id, item.id, newStatus);
-      if (r.success && r.data?.kot_status) {
-        setKots(prev => applyItemStatus(prev, r.data.kot_status));
-      } else if (!r.success) {
-        // Rollback item
+      if (!r.success) {
+        // Rollback
         setKots(prev => prev.map(k => k.id !== kot.id ? k : {
           ...k, items: (k.items||[]).map(it => it.id === item.id ? { ...it, status: item.status } : it)
         }));

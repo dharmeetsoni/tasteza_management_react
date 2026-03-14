@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   getPurchaseOrders, getPurchaseOrder, createPurchaseOrder,
   updatePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder,
-  deletePurchaseOrder, getInventory, getUnits
+  deletePurchaseOrder, getInventory, getUnits, getVendors, getSettings
 } from '../../api';
 import { useToast } from '../../context/ToastContext';
 import { fmtCur, fmtDate } from '../../utils';
@@ -16,48 +16,552 @@ const STATUS_META = {
   cancelled: { label: 'Cancelled', color: '#e84a5f', bg: 'rgba(232,74,95,.10)',  icon: '❌' },
 };
 
-const EMPTY_FORM = { supplier: '', supplier_phone: '', supplier_address: '', expected_date: '', notes: '' };
-const EMPTY_ITEM = { inventory_item_id: '', unit_id: '', quantity: '', unit_price: '', total: 0, notes: '' };
+// ─────────────────────────────────────────────────────────────────────────────
+// PO Print Slip — A4 printable purchase order
+// ─────────────────────────────────────────────────────────────────────────────
+const POPrint = React.forwardRef(({ po, settings }, ref) => {
+  if (!po) return null;
+  const items    = po.items || [];
+  const now      = new Date();
+  const printDate = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const printTime = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const expectedDate = po.expected_date
+    ? new Date(po.expected_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : '—';
+  const total = items.reduce((s, i) => s + parseFloat(i.total_price || 0), 0);
 
+  const row = (label, value) => value ? (
+    <tr>
+      <td style={{ padding: '3px 0', color: '#555', fontSize: 12, width: 130, verticalAlign: 'top' }}>{label}</td>
+      <td style={{ padding: '3px 0', fontWeight: 600, fontSize: 12 }}>{value}</td>
+    </tr>
+  ) : null;
+
+  return (
+    <div ref={ref} style={{ fontFamily: 'Arial, sans-serif', width: '100%', maxWidth: 720, margin: '0 auto', padding: 32, background: '#fff', color: '#111' }}>
+
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, paddingBottom: 16, borderBottom: '2px solid #111' }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: -0.5 }}>{settings?.restaurant_name || 'Restaurant'}</div>
+          {settings?.address && <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>{settings.address}</div>}
+          {settings?.phone  && <div style={{ fontSize: 11, color: '#555' }}>📞 {settings.phone}</div>}
+          {settings?.email  && <div style={{ fontSize: 11, color: '#555' }}>✉️ {settings.email}</div>}
+          {settings?.gst_number && <div style={{ fontSize: 11, color: '#555' }}>GST: {settings.gst_number}</div>}
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: 1, color: '#c0392b' }}>PURCHASE ORDER</div>
+          <div style={{ fontSize: 22, fontWeight: 900, fontFamily: 'monospace', marginTop: 4 }}>{po.po_number}</div>
+          <div style={{ fontSize: 11, color: '#555', marginTop: 6 }}>Printed: {printDate} {printTime}</div>
+          <div style={{ marginTop: 6, display: 'inline-block', padding: '3px 10px', borderRadius: 4,
+            background: STATUS_META[po.status]?.bg || '#eee',
+            color: STATUS_META[po.status]?.color || '#333',
+            fontWeight: 700, fontSize: 12, border: `1px solid ${STATUS_META[po.status]?.color || '#ccc'}` }}>
+            {STATUS_META[po.status]?.icon} {STATUS_META[po.status]?.label}
+          </div>
+        </div>
+      </div>
+
+      {/* Supplier + Order info */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: '#555', marginBottom: 8, borderBottom: '1px solid #ddd', paddingBottom: 4 }}>Supplier / Vendor</div>
+          <table style={{ borderCollapse: 'collapse' }}>
+            <tbody>
+              {row('Name',    po.supplier)}
+              {row('Phone',   po.supplier_phone)}
+              {row('Address', po.supplier_address)}
+              {row('Invoice', po.invoice_no)}
+            </tbody>
+          </table>
+          {!po.supplier && <div style={{ fontSize: 12, color: '#999', fontStyle: 'italic' }}>No supplier details</div>}
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: '#555', marginBottom: 8, borderBottom: '1px solid #ddd', paddingBottom: 4 }}>Order Details</div>
+          <table style={{ borderCollapse: 'collapse' }}>
+            <tbody>
+              {row('PO Number',    po.po_number)}
+              {row('Expected By',  expectedDate)}
+              {row('Created By',   po.created_by_name)}
+              {row('Bill Amount',  po.bill_amount ? `₹${parseFloat(po.bill_amount).toFixed(2)}` : null)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Items table */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 0, fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: '#111', color: '#fff' }}>
+            <th style={{ padding: '8px 10px', textAlign: 'left',  fontWeight: 700, width: 32  }}>#</th>
+            <th style={{ padding: '8px 10px', textAlign: 'left',  fontWeight: 700             }}>Item</th>
+            <th style={{ padding: '8px 10px', textAlign: 'left',  fontWeight: 700, width: 100 }}>Category</th>
+            <th style={{ padding: '8px 10px', textAlign: 'center',fontWeight: 700, width: 80  }}>Qty</th>
+            <th style={{ padding: '8px 10px', textAlign: 'center',fontWeight: 700, width: 60  }}>Unit</th>
+            <th style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, width: 100 }}>₹/Unit</th>
+            <th style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, width: 110 }}>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#f8f8f8', borderBottom: '1px solid #e0e0e0' }}>
+              <td style={{ padding: '8px 10px', color: '#888', fontSize: 11 }}>{i + 1}</td>
+              <td style={{ padding: '8px 10px', fontWeight: 600 }}>{item.item_name}</td>
+              <td style={{ padding: '8px 10px', fontSize: 11, color: '#666' }}>{item.category_name || '—'}</td>
+              <td style={{ padding: '8px 10px', textAlign: 'center' }}>{item.ordered_qty}</td>
+              <td style={{ padding: '8px 10px', textAlign: 'center', fontSize: 11, color: '#666' }}>{item.unit_abbr || '—'}</td>
+              <td style={{ padding: '8px 10px', textAlign: 'right' }}>₹{parseFloat(item.unit_price).toFixed(2)}</td>
+              <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700 }}>₹{parseFloat(item.total_price).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr style={{ background: '#f0f0f0', borderTop: '2px solid #111' }}>
+            <td colSpan={5} />
+            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, fontSize: 13 }}>Order Total</td>
+            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 900, fontSize: 16 }}>₹{total.toFixed(2)}</td>
+          </tr>
+        </tfoot>
+      </table>
+
+      {/* Notes */}
+      {po.notes && (
+        <div style={{ marginTop: 20, padding: '10px 14px', background: '#fffbe6', border: '1px solid #ffe08a', borderRadius: 6, fontSize: 12 }}>
+          <strong>Notes:</strong> {po.notes}
+        </div>
+      )}
+
+      {/* Signature row */}
+      <div style={{ marginTop: 48, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24 }}>
+        {['Prepared By', 'Authorised By', 'Received By'].map(label => (
+          <div key={label} style={{ textAlign: 'center' }}>
+            <div style={{ borderTop: '1px solid #888', paddingTop: 6, fontSize: 11, color: '#666' }}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 24, textAlign: 'center', fontSize: 10, color: '#aaa', borderTop: '1px solid #eee', paddingTop: 10 }}>
+        Generated by {settings?.restaurant_name || 'Tasteza'} · {printDate}
+      </div>
+    </div>
+  );
+});
+
+const EMPTY_FORM = { vendor_id: '', supplier: '', supplier_phone: '', supplier_address: '', expected_date: '', notes: '' };
+const EMPTY_ITEM = { inventory_item_id: '', unit_id: '', quantity: '', unit_price: '', total: 0 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ItemSearchPicker — searchable multi-select inventory picker (like image 2)
+// ─────────────────────────────────────────────────────────────────────────────
+function ItemSearchPicker({ invItems, onSelect }) {
+  const [query, setQuery]       = useState('');
+  const [open, setOpen]         = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const inputRef = useRef(null);
+  const dropRef  = useRef(null);
+
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    return q
+      ? invItems.filter(i =>
+          i.name.toLowerCase().includes(q) ||
+          (i.category_name || '').toLowerCase().includes(q))
+      : invItems;
+  }, [invItems, query]);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (dropRef.current && !dropRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const toggle = (item) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+      return next;
+    });
+  };
+
+  const confirmSelection = () => {
+    const picked = invItems.filter(i => selected.has(i.id));
+    onSelect(picked);
+    setSelected(new Set());
+    setQuery('');
+    setOpen(false);
+  };
+
+  return (
+    <div ref={dropRef} style={{ position: 'relative' }}>
+      <button type="button" className="btn-add-row"
+        onClick={() => { setOpen(v => !v); setTimeout(() => inputRef.current?.focus(), 50); }}>
+        + Add Items
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: '110%', zIndex: 1200,
+          background: 'var(--surface)', border: '2px solid var(--accent)',
+          borderRadius: 14, boxShadow: '0 8px 36px rgba(0,0,0,.18)',
+          width: 540, maxHeight: 440, display: 'flex', flexDirection: 'column',
+        }}>
+          {/* Search input */}
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+              background: 'var(--bg)', borderRadius: 8, padding: '7px 11px',
+              border: '1.5px solid var(--border)' }}>
+              <span style={{ fontSize: 14 }}>🔍</span>
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search items…"
+                style={{ flex: 1, border: 'none', background: 'transparent',
+                  outline: 'none', fontSize: 13, fontFamily: 'inherit', color: 'var(--ink)' }}
+              />
+              {query && (
+                <button type="button" onClick={() => setQuery('')}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--ink2)', fontSize: 14, lineHeight: 1 }}>✕</button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--ink2)', marginTop: 5,
+              display: 'flex', justifyContent: 'space-between' }}>
+              <span>{filtered.length} items{query ? ' matched' : ' — type to filter'}</span>
+              {selected.size > 0 && (
+                <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{selected.size} selected</span>
+              )}
+            </div>
+          </div>
+
+          {/* Items 2-column grid */}
+          <div style={{ overflowY: 'auto', flex: 1, padding: '8px 10px' }}>
+            {filtered.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '28px', color: 'var(--ink2)', fontSize: 13 }}>
+                No items found
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                {filtered.map(item => {
+                  const isSel = selected.has(item.id);
+                  return (
+                    <div key={item.id} onClick={() => toggle(item)} style={{
+                      padding: '9px 11px', borderRadius: 9, cursor: 'pointer',
+                      border: `2px solid ${isSel ? 'var(--accent)' : 'var(--border)'}`,
+                      background: isSel ? 'rgba(232,87,42,.06)' : 'var(--bg)',
+                      transition: 'all .12s',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--ink)', lineHeight: 1.3 }}>{item.name}</div>
+                        {isSel && (
+                          <div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                            background: 'var(--accent)', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 10, fontWeight: 900 }}>✓</div>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--ink2)', marginTop: 2 }}>
+                        {item.category_name || 'Uncategorized'}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>
+                          {item.purchase_price
+                            ? `₹${parseFloat(item.purchase_price).toFixed(2)}/${item.unit_abbr || 'unit'}`
+                            : '₹—'}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--ink2)' }}>
+                          stock: {parseFloat(item.current_stock || 0).toFixed(1)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', flexShrink: 0,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button type="button" onClick={() => setOpen(false)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 13, color: 'var(--ink2)', fontFamily: 'inherit' }}>
+              Cancel
+            </button>
+            <button type="button" className="btn-p"
+              onClick={confirmSelection}
+              disabled={selected.size === 0}
+              style={{ padding: '7px 20px', fontSize: 13, opacity: selected.size === 0 ? .4 : 1 }}>
+              Add {selected.size > 0 ? `${selected.size} ` : ''}Item{selected.size !== 1 ? 's' : ''}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PoItemRow — one row in the order items table
+// ─────────────────────────────────────────────────────────────────────────────
+function PoItemRow({ item, idx, units, invItems, onChange, onRemove }) {
+  const inv = invItems.find(i => i.id === parseInt(item.inventory_item_id));
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '24px 1fr 88px 90px 108px 96px 28px',
+      gap: 8, alignItems: 'center',
+      padding: '10px 14px',
+      borderBottom: '1px solid var(--border)',
+      background: idx % 2 === 0 ? 'transparent' : 'rgba(0,0,0,.012)',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink2)' }}>{idx + 1}</div>
+
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {inv?.name ?? <span style={{ color: 'var(--ink2)', fontStyle: 'italic' }}>—</span>}
+        </div>
+        {inv && <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{inv.category_name}</div>}
+      </div>
+
+      <input className="ri-qty" type="number" min="0" placeholder="0"
+        value={item.quantity}
+        onChange={e => onChange(idx, 'quantity', e.target.value)}
+        style={{ width: '100%', textAlign: 'center' }} />
+
+      <select className="ri-sel" value={item.unit_id}
+        onChange={e => onChange(idx, 'unit_id', e.target.value)}
+        style={{ width: '100%' }}>
+        <option value="">Unit</option>
+        {units.map(u => <option key={u.id} value={u.id}>{u.abbreviation}</option>)}
+      </select>
+
+      <input className="ri-qty" type="number" min="0" placeholder="₹0"
+        value={item.unit_price}
+        onChange={e => onChange(idx, 'unit_price', e.target.value)}
+        style={{ width: '100%', textAlign: 'right' }} />
+
+      <div style={{ textAlign: 'right', fontWeight: 700, fontSize: 13,
+        color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>
+        {fmtCur(item.total)}
+      </div>
+
+      <button type="button" className="ing-remove-btn" onClick={() => onRemove(idx)}>✕</button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PoFormContent — defined OUTSIDE PurchaseOrderPage so React never remounts it
+// on state changes inside the parent, which was causing focus to jump.
+// ─────────────────────────────────────────────────────────────────────────────
+function PoFormContent({ form, setForm, poItems, units, invItems, vendors, updatePoItem, removePoItem, addPickedItems, poTotal }) {
+  const set = field => e => setForm(f => ({ ...f, [field]: e.target.value }));
+
+  // When vendor is selected, auto-fill supplier fields and filter items by vendor's categories
+  const selectedVendor = useMemo(() =>
+    vendors.find(v => v.id === parseInt(form.vendor_id)) || null,
+  [vendors, form.vendor_id]);
+
+  const handleVendorChange = (e) => {
+    const vid = e.target.value;
+    const vendor = vendors.find(v => v.id === parseInt(vid));
+    setForm(f => ({
+      ...f,
+      vendor_id: vid,
+      supplier:         vendor ? vendor.name          : f.supplier,
+      supplier_phone:   vendor ? (vendor.phone || '')  : f.supplier_phone,
+      supplier_address: vendor ? (vendor.address || '') : f.supplier_address,
+    }));
+  };
+
+  // Filter inventory items to vendor's categories (if vendor selected and has categories)
+  const filteredInvItems = useMemo(() => {
+    if (!selectedVendor || !selectedVendor.category_ids?.length) return invItems;
+    return invItems.filter(item => selectedVendor.category_ids.includes(item.category_id));
+  }, [invItems, selectedVendor]);
+
+  const hasItems = poItems.some(r => r.inventory_item_id);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* ── Vendor selector ── */}
+      <div className="recipe-section">
+        <div className="recipe-section-title">🏪 Vendor / Supplier</div>
+
+        {/* Quick vendor pick */}
+        <div style={{ marginBottom: 14 }}>
+          <label className="mlabel">Select Vendor</label>
+          <select className="mfi" value={form.vendor_id} onChange={handleVendorChange}
+            style={{ fontWeight: form.vendor_id ? 700 : 400 }}>
+            <option value="">— Choose a vendor or fill manually below —</option>
+            {vendors.filter(v => v.is_active).map(v => (
+              <option key={v.id} value={v.id}>
+                {v.name}{v.category_names?.length ? ` (${v.category_names.join(', ')})` : ''}
+              </option>
+            ))}
+          </select>
+          {selectedVendor && (
+            <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 9,
+              background: 'rgba(29,185,126,.07)', border: '1.5px solid rgba(29,185,126,.2)',
+              fontSize: 12, color: 'var(--green)', fontWeight: 600, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              ✅ Showing <strong>{filteredInvItems.length}</strong> items from {selectedVendor.category_names.length > 0
+                ? selectedVendor.category_names.join(', ')
+                : 'all categories'}
+              {selectedVendor.phone && <span>📞 {selectedVendor.phone}</span>}
+            </div>
+          )}
+        </div>
+
+        <div className="mgrid">
+          <div>
+            <label className="mlabel">Supplier Name</label>
+            <input className="mfi" placeholder="e.g. Fresh Farms"
+              value={form.supplier} onChange={set('supplier')} />
+          </div>
+          <div>
+            <label className="mlabel">Phone</label>
+            <input className="mfi" placeholder="Contact number"
+              value={form.supplier_phone} onChange={set('supplier_phone')} />
+          </div>
+          <div>
+            <label className="mlabel">Expected Delivery Date</label>
+            <input className="mfi" type="date"
+              value={form.expected_date} onChange={set('expected_date')} />
+          </div>
+          <div>
+            <label className="mlabel">Notes</label>
+            <input className="mfi" placeholder="Optional notes"
+              value={form.notes} onChange={set('notes')} />
+          </div>
+          <div className="mfull">
+            <label className="mlabel">Supplier Address</label>
+            <input className="mfi" placeholder="Optional address"
+              value={form.supplier_address} onChange={set('supplier_address')} />
+          </div>
+        </div>
+      </div>
+
+      <hr className="mdiv" />
+
+      {/* ── Order items ── */}
+      <div className="recipe-section">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div>
+            <div className="recipe-section-title" style={{ marginBottom: 0 }}>🧺 Order Items *</div>
+            {selectedVendor && filteredInvItems.length < invItems.length && (
+              <div style={{ fontSize: 11, color: 'var(--ink2)', marginTop: 3 }}>
+                Filtered to {selectedVendor.category_names.join(' / ')} items
+              </div>
+            )}
+          </div>
+          <ItemSearchPicker invItems={filteredInvItems} onSelect={addPickedItems} />
+        </div>
+
+        <div className="ri-table">
+          {/* Column headers */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '24px 1fr 88px 90px 108px 96px 28px',
+            gap: 8, padding: '8px 14px',
+            background: 'var(--bg)', borderBottom: '2px solid var(--border)',
+          }}>
+            {['#', 'Item', 'Qty', 'Unit', '₹/Unit', 'Total', ''].map((h, i) => (
+              <div key={i} style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink2)',
+                textTransform: 'uppercase', letterSpacing: .4,
+                textAlign: i >= 4 && i <= 5 ? 'right' : i === 2 ? 'center' : 'left' }}>
+                {h}
+              </div>
+            ))}
+          </div>
+
+          {/* Empty state */}
+          {!hasItems && (
+            <div style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--ink2)' }}>
+              <div style={{ fontSize: 30, marginBottom: 8 }}>🧺</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>No items added yet</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>
+                {selectedVendor
+                  ? <>Click <strong>+ Add Items</strong> to pick from <strong>{selectedVendor.category_names.join(' / ')}</strong> items</>
+                  : <>Select a vendor above to filter items, or click <strong>+ Add Items</strong> to pick from all inventory</>}
+              </div>
+            </div>
+          )}
+
+          {/* Rows */}
+          {poItems.map((item, idx) =>
+            item.inventory_item_id ? (
+              <PoItemRow
+                key={`${item.inventory_item_id}-${idx}`}
+                item={item} idx={idx} units={units} invItems={invItems}
+                onChange={updatePoItem} onRemove={removePoItem}
+              />
+            ) : null
+          )}
+
+          {/* Total */}
+          {hasItems && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+              padding: '12px 16px', gap: 14, borderTop: '2px solid var(--border)',
+              background: 'rgba(232,87,42,.03)' }}>
+              <span style={{ fontSize: 13, color: 'var(--ink2)', fontWeight: 600 }}>Order Total</span>
+              <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--accent)',
+                fontVariantNumeric: 'tabular-nums' }}>
+                {fmtCur(poTotal)}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PurchaseOrderPage — main component
+// ─────────────────────────────────────────────────────────────────────────────
 export default function PurchaseOrderPage() {
   const toast = useToast();
-  const [orders, setOrders]       = useState([]);
-  const [invItems, setInvItems]   = useState([]);
-  const [units, setUnits]         = useState([]);
-  const [loading, setLoading]     = useState(true);
+  const [orders, setOrders]     = useState([]);
+  const [invItems, setInvItems] = useState([]);
+  const [units, setUnits]       = useState([]);
+  const [vendors, setVendors]   = useState([]);
+  const [settings, setSettings] = useState({});
+  const printRef = useRef(null);
+  const [loading, setLoading]   = useState(true);
   const [statusFilter, setStatus] = useState('');
-  const [search, setSearch]       = useState('');
-  const [view, setView]           = useState('table');
+  const [search, setSearch]     = useState('');
+  const [view, setView]         = useState('table');
 
-  // Modals
-  const [createModal, setCreateModal] = useState(false);
-  const [editModal, setEditModal]     = useState(null);  // PO object
-  const [viewModal, setViewModal]     = useState(null);  // PO with items
+  const [createModal, setCreateModal]   = useState(false);
+  const [editModal, setEditModal]       = useState(null);
+  const [viewModal, setViewModal]       = useState(null);
   const [receiveModal, setReceiveModal] = useState(null);
-  const [cancelModal, setCancelModal] = useState(null);
-  const [deleteModal, setDeleteModal] = useState(null);
-  const [viewLoading, setViewLoading] = useState(false);
+  const [cancelModal, setCancelModal]   = useState(null);
+  const [deleteModal, setDeleteModal]   = useState(null);
+  const [viewLoading, setViewLoading]   = useState(false);
 
-  // Create/Edit form
-  const [form, setForm]   = useState(EMPTY_FORM);
+  const [form, setForm]       = useState(EMPTY_FORM);
   const [poItems, setPoItems] = useState([{ ...EMPTY_ITEM }]);
-
-  // Receive form
   const [receiveData, setReceiveData] = useState({ invoice_no: '', bill_amount: '', notes: '', items: [] });
 
-  // ── Load ─────────────────────────────────────────────
-  const load = async () => {
+  // ── Load ────────────────────────────────────────────────────────────────
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [o, inv, u] = await Promise.all([getPurchaseOrders(), getInventory(), getUnits()]);
+      const [o, inv, u, v, s] = await Promise.all([getPurchaseOrders(), getInventory(), getUnits(), getVendors(), getSettings()]);
       if (o.success)   setOrders(o.data);
       if (inv.success) setInvItems(inv.data);
       if (u.success)   setUnits(u.data);
+      if (v.success)   setVendors(v.data);
+      if (s.success)   setSettings(s.data || {});
     } finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, []);
+  }, []);
+  useEffect(() => { void load(); }, [load]);
 
-  // ── Filtering ─────────────────────────────────────────
   const filtered = useMemo(() => orders.filter(o => {
     if (statusFilter && o.status !== statusFilter) return false;
     if (search && !o.po_number.toLowerCase().includes(search.toLowerCase())
@@ -71,35 +575,52 @@ export default function PurchaseOrderPage() {
     return c;
   }, [orders]);
 
-  // ── PO Item helpers ───────────────────────────────────
-  const updatePoItem = (idx, field, val) => {
+  // ── PO item helpers ──────────────────────────────────────────────────────
+  const updatePoItem = useCallback((idx, field, val) => {
     setPoItems(prev => {
       const next = [...prev];
       next[idx] = { ...next[idx], [field]: val };
-      if (field === 'inventory_item_id') {
-        const item = invItems.find(i => i.id === parseInt(val));
-        if (item) {
-          next[idx].unit_id = item.unit_id || '';
-          next[idx].unit_price = item.purchase_price || '';
-        }
-      }
       const q = parseFloat(field === 'quantity'   ? val : next[idx].quantity)   || 0;
       const p = parseFloat(field === 'unit_price' ? val : next[idx].unit_price) || 0;
       next[idx].total = q * p;
       return next;
     });
-  };
+  }, []);
+
+  const removePoItem = useCallback((idx) => {
+    setPoItems(prev => {
+      const next = prev.filter((_, i) => i !== idx);
+      return next.length ? next : [{ ...EMPTY_ITEM }];
+    });
+  }, []);
+
+  const addPickedItems = useCallback((picked) => {
+    setPoItems(prev => {
+      const existing = prev.filter(r => r.inventory_item_id);
+      const existingIds = new Set(existing.map(r => parseInt(r.inventory_item_id)));
+      const newRows = picked
+        .filter(item => !existingIds.has(item.id))
+        .map(item => ({
+          inventory_item_id: item.id,
+          unit_id: item.unit_id || '',
+          quantity: '',
+          unit_price: item.purchase_price || '',
+          total: 0,
+        }));
+      const merged = [...existing, ...newRows];
+      return merged.length ? merged : [{ ...EMPTY_ITEM }];
+    });
+  }, []);
 
   const poTotal = poItems.reduce((s, i) => s + (parseFloat(i.total) || 0), 0);
 
-  // ── Open create modal ─────────────────────────────────
+  // ── Modal openers ────────────────────────────────────────────────────────
   const openCreate = () => {
     setForm({ ...EMPTY_FORM });
     setPoItems([{ ...EMPTY_ITEM }]);
     setCreateModal(true);
   };
 
-  // ── Open edit modal ───────────────────────────────────
   const openEdit = async (po) => {
     setViewLoading(true);
     try {
@@ -107,13 +628,12 @@ export default function PurchaseOrderPage() {
       if (d.success) {
         const p = d.data;
         setForm({ supplier: p.supplier || '', supplier_phone: p.supplier_phone || '', supplier_address: p.supplier_address || '', expected_date: p.expected_date?.split('T')[0] || '', notes: p.notes || '' });
-        setPoItems(p.items.map(i => ({ id: i.id, inventory_item_id: i.inventory_item_id, unit_id: i.unit_id || '', quantity: i.ordered_qty, unit_price: i.unit_price, total: i.total_price, notes: i.notes || '' })));
+        setPoItems(p.items.map(i => ({ id: i.id, inventory_item_id: i.inventory_item_id, unit_id: i.unit_id || '', quantity: i.ordered_qty, unit_price: i.unit_price, total: i.total_price })));
         setEditModal(p);
       }
     } finally { setViewLoading(false); }
   };
 
-  // ── Open view modal ───────────────────────────────────
   const openView = async (po) => {
     setViewLoading(true);
     setViewModal({ ...po, items: [] });
@@ -123,7 +643,6 @@ export default function PurchaseOrderPage() {
     } finally { setViewLoading(false); }
   };
 
-  // ── Open receive modal ────────────────────────────────
   const openReceive = async (po) => {
     setViewLoading(true);
     try {
@@ -131,15 +650,10 @@ export default function PurchaseOrderPage() {
       if (d.success) {
         const p = d.data;
         setReceiveData({
-          invoice_no: p.invoice_no || '',
-          bill_amount: p.bill_amount || '',
-          notes: '',
+          invoice_no: p.invoice_no || '', bill_amount: p.bill_amount || '', notes: '',
           items: p.items.map(i => ({
-            item_id: i.id,
-            item_name: i.item_name,
-            unit_abbr: i.unit_abbr,
-            ordered_qty: i.ordered_qty,
-            already_received: i.received_qty || 0,
+            item_id: i.id, item_name: i.item_name, unit_abbr: i.unit_abbr,
+            ordered_qty: i.ordered_qty, already_received: i.received_qty || 0,
             received_qty: Math.max(0, parseFloat(i.ordered_qty) - parseFloat(i.received_qty || 0)),
             unit_price: i.unit_price,
           }))
@@ -149,12 +663,142 @@ export default function PurchaseOrderPage() {
     } finally { setViewLoading(false); }
   };
 
-  // ── Save create ───────────────────────────────────────
-  const saveCreate = async () => {
-    if (!poItems.some(i => i.inventory_item_id && i.quantity)) {
-      toast('Add at least one item with quantity.', 'er'); return;
+  // ── Print PO ──────────────────────────────────────────────────────────────
+  const printPO = async (po) => {
+    // Fetch full details if needed, then open print window
+    let fullPO = po;
+    if (!po.items) {
+      const d = await getPurchaseOrder(po.id);
+      if (d.success) fullPO = d.data;
     }
+    // Render into a hidden div, capture HTML, open print window
+    const tempDiv = document.createElement('div');
+    document.body.appendChild(tempDiv);
+    const React2 = require ? React : window.React;
+    // Use innerHTML approach: render POPrint to string via a temporary hidden ref
+    const printContent = printRef.current?.innerHTML;
+    if (!printContent) {
+      // fallback: build inline
+      _doPrint(fullPO, settings);
+    } else {
+      _doPrint(fullPO, settings);
+    }
+    document.body.removeChild(tempDiv);
+  };
+
+  const _doPrint = (po, settings) => {
+    const items = po.items || [];
+    const total = items.reduce((s, i) => s + parseFloat(i.total_price || 0), 0);
+    const now = new Date();
+    const printDate = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const printTime = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const expectedDate = po.expected_date
+      ? new Date(po.expected_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+      : '—';
+    const statusMeta = { pending: { label:'Pending', color:'#b07a00' }, partial: { label:'Partial', color:'#118ab2' }, received: { label:'Received', color:'#1db97e' }, cancelled: { label:'Cancelled', color:'#e84a5f' } };
+    const sm = statusMeta[po.status] || statusMeta.pending;
+
+    const itemRows = items.map((item, i) => `
+      <tr style="background:${i%2===0?'#fff':'#f8f8f8'};border-bottom:1px solid #e0e0e0">
+        <td style="padding:8px 10px;color:#888;font-size:11px">${i+1}</td>
+        <td style="padding:8px 10px;font-weight:600">${item.item_name || ''}</td>
+        <td style="padding:8px 10px;font-size:11px;color:#666">${item.category_name || '—'}</td>
+        <td style="padding:8px 10px;text-align:center">${item.ordered_qty}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:11px;color:#666">${item.unit_abbr || '—'}</td>
+        <td style="padding:8px 10px;text-align:right">₹${parseFloat(item.unit_price).toFixed(2)}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:700">₹${parseFloat(item.total_price).toFixed(2)}</td>
+      </tr>`).join('');
+
+    const infoRow = (label, value) => value ? `<tr><td style="padding:3px 0;color:#555;font-size:12px;width:130px;vertical-align:top">${label}</td><td style="padding:3px 0;font-weight:600;font-size:12px">${value}</td></tr>` : '';
+
+    const html = `<!DOCTYPE html><html><head><title>PO - ${po.po_number}</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;font-size:13px;color:#111;background:#fff;padding:32px}
+      @media print{body{padding:16px}@page{margin:10mm;size:A4}}
+      table{border-collapse:collapse;width:100%}
+    </style></head><body>
+
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #111">
+      <div>
+        <div style="font-size:22px;font-weight:900;letter-spacing:-0.5px">${settings?.restaurant_name || 'Restaurant'}</div>
+        ${settings?.address ? `<div style="font-size:11px;color:#555;margin-top:2px">${settings.address}</div>` : ''}
+        ${settings?.phone   ? `<div style="font-size:11px;color:#555">📞 ${settings.phone}</div>` : ''}
+        ${settings?.email   ? `<div style="font-size:11px;color:#555">✉️ ${settings.email}</div>` : ''}
+        ${settings?.gst_number ? `<div style="font-size:11px;color:#555">GST: ${settings.gst_number}</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:20px;font-weight:900;letter-spacing:1px;color:#c0392b">PURCHASE ORDER</div>
+        <div style="font-size:22px;font-weight:900;font-family:monospace;margin-top:4px">${po.po_number}</div>
+        <div style="font-size:11px;color:#555;margin-top:6px">Printed: ${printDate} ${printTime}</div>
+        <div style="margin-top:6px;display:inline-block;padding:3px 10px;border-radius:4px;background:#fff3cd;color:${sm.color};font-weight:700;font-size:12px;border:1px solid ${sm.color}">${sm.label}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
+      <div>
+        <div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#555;margin-bottom:8px;border-bottom:1px solid #ddd;padding-bottom:4px">Supplier / Vendor</div>
+        <table style="width:auto"><tbody>
+          ${infoRow('Name',    po.supplier)}
+          ${infoRow('Phone',   po.supplier_phone)}
+          ${infoRow('Address', po.supplier_address)}
+          ${infoRow('Invoice', po.invoice_no)}
+          ${!po.supplier ? '<tr><td style="font-size:12px;color:#999;font-style:italic">No supplier details</td></tr>' : ''}
+        </tbody></table>
+      </div>
+      <div>
+        <div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#555;margin-bottom:8px;border-bottom:1px solid #ddd;padding-bottom:4px">Order Details</div>
+        <table style="width:auto"><tbody>
+          ${infoRow('PO Number',   po.po_number)}
+          ${infoRow('Expected By', expectedDate)}
+          ${infoRow('Created By',  po.created_by_name)}
+          ${po.bill_amount ? infoRow('Bill Amount', `₹${parseFloat(po.bill_amount).toFixed(2)}`) : ''}
+        </tbody></table>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr style="background:#111;color:#fff">
+          <th style="padding:8px 10px;text-align:left;width:32px">#</th>
+          <th style="padding:8px 10px;text-align:left">Item</th>
+          <th style="padding:8px 10px;text-align:left;width:100px">Category</th>
+          <th style="padding:8px 10px;text-align:center;width:80px">Qty</th>
+          <th style="padding:8px 10px;text-align:center;width:60px">Unit</th>
+          <th style="padding:8px 10px;text-align:right;width:100px">₹/Unit</th>
+          <th style="padding:8px 10px;text-align:right;width:110px">Total</th>
+        </tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+      <tfoot>
+        <tr style="background:#f0f0f0;border-top:2px solid #111">
+          <td colspan="5"></td>
+          <td style="padding:10px;text-align:right;font-weight:700;font-size:13px">Order Total</td>
+          <td style="padding:10px;text-align:right;font-weight:900;font-size:16px">₹${total.toFixed(2)}</td>
+        </tr>
+      </tfoot>
+    </table>
+
+    ${po.notes ? `<div style="margin-top:20px;padding:10px 14px;background:#fffbe6;border:1px solid #ffe08a;border-radius:6px;font-size:12px"><strong>Notes:</strong> ${po.notes}</div>` : ''}
+
+    <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+      ${['Prepared By','Authorised By','Received By'].map(l => `<div style="text-align:center"><div style="border-top:1px solid #888;padding-top:6px;font-size:11px;color:#666">${l}</div></div>`).join('')}
+    </div>
+
+    <div style="margin-top:24px;text-align:center;font-size:10px;color:#aaa;border-top:1px solid #eee;padding-top:10px">
+      Generated by ${settings?.restaurant_name || 'Tasteza'} · ${printDate}
+    </div>
+
+    <script>window.onload=()=>{window.print();window.close()}<\/script>
+    </body></html>`;
+
+    const win = window.open('', '_blank', 'width=800,height=900');
+    win.document.write(html);
+    win.document.close();
+  };
+  const saveCreate = async () => {
     const validItems = poItems.filter(i => i.inventory_item_id && i.quantity);
+    if (!validItems.length) { toast('Add at least one item with quantity.', 'er'); return; }
     try {
       const d = await createPurchaseOrder({ ...form, items: validItems });
       if (d.success) { toast(`Order ${d.data.po_number} created! ✅`, 'ok'); setCreateModal(false); load(); }
@@ -162,7 +806,6 @@ export default function PurchaseOrderPage() {
     } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
   };
 
-  // ── Save edit ─────────────────────────────────────────
   const saveEdit = async () => {
     const validItems = poItems.filter(i => i.inventory_item_id && i.quantity);
     if (!validItems.length) { toast('Add at least one item.', 'er'); return; }
@@ -173,23 +816,20 @@ export default function PurchaseOrderPage() {
     } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
   };
 
-  // ── Receive order ─────────────────────────────────────
   const doReceive = async () => {
-    const hasAny = receiveData.items.some(i => parseFloat(i.received_qty) > 0);
-    if (!hasAny) { toast('Enter received quantity for at least one item.', 'er'); return; }
+    if (!receiveData.items.some(i => parseFloat(i.received_qty) > 0)) {
+      toast('Enter received quantity for at least one item.', 'er'); return;
+    }
     try {
       const d = await receivePurchaseOrder(receiveModal.id, {
-        invoice_no: receiveData.invoice_no,
-        bill_amount: receiveData.bill_amount,
-        notes: receiveData.notes,
+        invoice_no: receiveData.invoice_no, bill_amount: receiveData.bill_amount, notes: receiveData.notes,
         items: receiveData.items.map(i => ({ item_id: i.item_id, received_qty: i.received_qty }))
       });
-      if (d.success) { toast('Stock updated! Inventory adjusted. ✅', 'ok'); setReceiveModal(null); load(); }
+      if (d.success) { toast('Stock updated! ✅', 'ok'); setReceiveModal(null); load(); }
       else toast(d.message || 'Error', 'er');
     } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
   };
 
-  // ── Cancel / Delete ───────────────────────────────────
   const doCancel = async () => {
     try {
       const d = await cancelPurchaseOrder(cancelModal.id);
@@ -202,105 +842,28 @@ export default function PurchaseOrderPage() {
     try {
       const d = await deletePurchaseOrder(deleteModal.id);
       if (d.success) { toast('Order deleted.', 'ok'); setDeleteModal(null); load(); }
-      else toast(d.message || 'Error', 'er');
+      else toast(err?.response?.data?.message || 'Error', 'er');
     } catch (err) { toast(err?.response?.data?.message || 'Error', 'er'); }
   };
 
-  // ── Status badge ──────────────────────────────────────
   const StatusBadge = ({ status }) => {
     const m = STATUS_META[status] || STATUS_META.pending;
     return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: m.bg, color: m.color }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+        background: m.bg, color: m.color }}>
         {m.icon} {m.label}
       </span>
     );
   };
 
-  // ── PO Form (shared for create & edit) ────────────────
-  const PoForm = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Supplier info */}
-      <div className="recipe-section">
-        <div className="recipe-section-title">🏪 Supplier Details</div>
-        <div className="mgrid">
-          <div>
-            <label className="mlabel">Supplier Name</label>
-            <input className="mfi" placeholder="e.g. Fresh Farms" value={form.supplier} onChange={e => setForm(f => ({ ...f, supplier: e.target.value }))} autoFocus />
-          </div>
-          <div>
-            <label className="mlabel">Phone</label>
-            <input className="mfi" placeholder="Contact number" value={form.supplier_phone} onChange={e => setForm(f => ({ ...f, supplier_phone: e.target.value }))} />
-          </div>
-          <div>
-            <label className="mlabel">Expected Delivery Date</label>
-            <input className="mfi" type="date" value={form.expected_date} onChange={e => setForm(f => ({ ...f, expected_date: e.target.value }))} />
-          </div>
-          <div>
-            <label className="mlabel">Notes</label>
-            <input className="mfi" placeholder="Optional notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-          </div>
-          <div className="mfull">
-            <label className="mlabel">Supplier Address</label>
-            <input className="mfi" placeholder="Optional address" value={form.supplier_address} onChange={e => setForm(f => ({ ...f, supplier_address: e.target.value }))} />
-          </div>
-        </div>
-      </div>
+  // ── Shared form props ────────────────────────────────────────────────────
+  const formProps = {
+    form, setForm, poItems, units, invItems, vendors,
+    updatePoItem, removePoItem, addPickedItems, poTotal
+  };
 
-      <hr className="mdiv" />
-
-      {/* Items */}
-      <div className="recipe-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div className="recipe-section-title" style={{ marginBottom: 0 }}>🧺 Order Items *</div>
-          <button type="button" className="btn-add-row" onClick={() => setPoItems(p => [...p, { ...EMPTY_ITEM }])}>
-            + Add Item
-          </button>
-        </div>
-        <div className="ri-table">
-          <div className="ri-thead">
-            <div style={{ width: 22 }}>#</div>
-            <div style={{ flex: 2 }}>Item</div>
-            <div style={{ width: 80 }}>Qty</div>
-            <div style={{ width: 88 }}>Unit</div>
-            <div style={{ width: 100 }}>₹/Unit</div>
-            <div style={{ width: 96, textAlign: 'right' }}>Total</div>
-            <div style={{ width: 30 }}></div>
-          </div>
-          {poItems.map((item, idx) => (
-            <div key={idx} className="ri-row2">
-              <div style={{ width: 22, fontSize: 11, fontWeight: 700, color: 'var(--ink2)', flexShrink: 0 }}>{idx + 1}</div>
-              <select className="ri-sel" style={{ flex: 2 }}
-                value={item.inventory_item_id} onChange={e => updatePoItem(idx, 'inventory_item_id', e.target.value)}>
-                <option value="">Select item…</option>
-                {invItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.category_name})</option>)}
-              </select>
-              <input className="ri-qty" type="number" placeholder="0" value={item.quantity}
-                onChange={e => updatePoItem(idx, 'quantity', e.target.value)} style={{ width: 80 }} />
-              <select className="ri-sel" style={{ width: 88 }}
-                value={item.unit_id} onChange={e => updatePoItem(idx, 'unit_id', e.target.value)}>
-                <option value="">Unit</option>
-                {units.map(u => <option key={u.id} value={u.id}>{u.abbreviation}</option>)}
-              </select>
-              <input className="ri-qty" type="number" placeholder="₹0" value={item.unit_price}
-                onChange={e => updatePoItem(idx, 'unit_price', e.target.value)} style={{ width: 100 }} />
-              <div className="ri-cost2" style={{ width: 96 }}>{fmtCur(item.total)}</div>
-              <button type="button" className="ing-remove-btn"
-                onClick={() => poItems.length === 1 ? setPoItems([{ ...EMPTY_ITEM }]) : setPoItems(p => p.filter((_, i) => i !== idx))}>
-                ✕
-              </button>
-            </div>
-          ))}
-          {/* Total row */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', padding: '12px 16px', gap: 12, borderTop: '2px solid var(--border)', background: 'rgba(232,87,42,.03)' }}>
-            <span style={{ fontSize: 13, color: 'var(--ink2)', fontWeight: 600 }}>Order Total</span>
-            <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' }}>{fmtCur(poTotal)}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ── RENDER ────────────────────────────────────────────
+  // ── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div>
       <div className="ph">
@@ -347,14 +910,9 @@ export default function PurchaseOrderPage() {
             <table>
               <thead>
                 <tr>
-                  <th>PO Number</th>
-                  <th>Supplier</th>
-                  <th>Items</th>
-                  <th>Total Amount</th>
-                  <th>Expected</th>
-                  <th>Status</th>
-                  <th>Created By</th>
-                  <th>Actions</th>
+                  <th>PO Number</th><th>Supplier</th><th>Items</th>
+                  <th>Total Amount</th><th>Expected</th><th>Status</th>
+                  <th>Created By</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -375,18 +933,19 @@ export default function PurchaseOrderPage() {
                     <td style={{ fontSize: 13 }}>{o.created_by_name}</td>
                     <td>
                       <div className="tact">
-                        <button className="bsm bo" onClick={() => openView(o)} title="View details">👁️</button>
+                        <button className="bsm bo" onClick={() => openView(o)}>👁️</button>
+                        <button className="bsm" onClick={() => printPO(o)} title="Print" style={{ background:'rgba(99,102,241,.1)', color:'#6366f1' }}>🖨️</button>
                         {o.status === 'pending' && <>
-                          <button className="bsm be" onClick={() => openEdit(o)} title="Edit">✏️</button>
+                          <button className="bsm be" onClick={() => openEdit(o)}>✏️</button>
                           <button className="bsm bt" style={{ background: 'rgba(29,185,126,.1)', color: 'var(--green)' }}
-                            onClick={() => openReceive(o)} title="Receive items">📥 Receive</button>
-                          <button className="bsm bd" onClick={() => setCancelModal(o)} title="Cancel">✕</button>
+                            onClick={() => openReceive(o)}>📥 Receive</button>
+                          <button className="bsm bd" onClick={() => setCancelModal(o)}>✕</button>
                         </>}
                         {o.status === 'partial' && (
                           <button className="bsm bt" style={{ background: 'rgba(29,185,126,.1)', color: 'var(--green)' }}
-                            onClick={() => openReceive(o)} title="Receive remaining">📥 Receive</button>
+                            onClick={() => openReceive(o)}>📥 Receive</button>
                         )}
-                        <button className="bsm bd" onClick={() => setDeleteModal(o)} title="Delete">🗑️</button>
+                        <button className="bsm bd" onClick={() => setDeleteModal(o)}>🗑️</button>
                       </div>
                     </td>
                   </tr>
@@ -401,38 +960,21 @@ export default function PurchaseOrderPage() {
               return (
                 <div key={o.id} className="inv-card" style={{ borderTop: `3px solid ${m.color}` }}>
                   <div className="inv-card-top">
-                    <div style={{ width: 48, height: 48, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, background: m.bg, flexShrink: 0 }}>
-                      {m.icon}
-                    </div>
-                    <div className="inv-card-info">
-                      <h4 style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{o.po_number}</h4>
-                      <p>{o.supplier || 'No supplier'}</p>
-                    </div>
+                    <div style={{ width: 48, height: 48, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, background: m.bg, flexShrink: 0 }}>{m.icon}</div>
+                    <div className="inv-card-info"><h4 style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{o.po_number}</h4><p>{o.supplier || 'No supplier'}</p></div>
                     <StatusBadge status={o.status} />
                   </div>
                   <div className="inv-card-body">
-                    <div className="inv-kv">
-                      <div className="k">Total</div>
-                      <div className="v">{fmtCur(o.total_amount)}</div>
-                    </div>
-                    <div className="inv-kv">
-                      <div className="k">Items</div>
-                      <div className="v">{o.item_count}</div>
-                    </div>
-                    <div className="inv-kv">
-                      <div className="k">Expected</div>
-                      <div className="v" style={{ fontSize: 13 }}>{o.expected_date ? o.expected_date.split('T')[0] : '—'}</div>
-                    </div>
-                    <div className="inv-kv">
-                      <div className="k">Created</div>
-                      <div className="v" style={{ fontSize: 12 }}>{fmtDate(o.created_at)}</div>
-                    </div>
+                    <div className="inv-kv"><div className="k">Total</div><div className="v">{fmtCur(o.total_amount)}</div></div>
+                    <div className="inv-kv"><div className="k">Items</div><div className="v">{o.item_count}</div></div>
+                    <div className="inv-kv"><div className="k">Expected</div><div className="v" style={{ fontSize: 13 }}>{o.expected_date ? o.expected_date.split('T')[0] : '—'}</div></div>
+                    <div className="inv-kv"><div className="k">Created</div><div className="v" style={{ fontSize: 12 }}>{fmtDate(o.created_at)}</div></div>
                   </div>
                   <div className="inv-card-foot">
                     <button className="bsm bo" onClick={() => openView(o)}>👁️ View</button>
+                    <button className="bsm" onClick={() => printPO(o)} title="Print" style={{ background:'rgba(99,102,241,.1)', color:'#6366f1' }}>🖨️</button>
                     {(o.status === 'pending' || o.status === 'partial') && (
-                      <button className="bsm bt" style={{ background: 'rgba(29,185,126,.1)', color: 'var(--green)' }}
-                        onClick={() => openReceive(o)}>📥 Receive</button>
+                      <button className="bsm bt" style={{ background: 'rgba(29,185,126,.1)', color: 'var(--green)' }} onClick={() => openReceive(o)}>📥 Receive</button>
                     )}
                     {o.status === 'pending' && <button className="bsm be" onClick={() => openEdit(o)}>✏️</button>}
                     <button className="bsm bd" onClick={() => setDeleteModal(o)}>🗑️</button>
@@ -444,33 +986,33 @@ export default function PurchaseOrderPage() {
         )}
       </div>
 
-      {/* ── CREATE MODAL ─────────────────────────────────── */}
+      {/* ── CREATE MODAL ─────────────────────────────────────────────────── */}
       <Modal show={createModal} onClose={() => setCreateModal(false)}
         title="New Purchase Order" subtitle="Create an order for inventory items" wide
         footer={<>
           <button className="btn-c" onClick={() => setCreateModal(false)}>Cancel</button>
           <button className="btn-p" onClick={saveCreate}>Create Order</button>
         </>}>
-        <PoForm />
+        <PoFormContent {...formProps} />
       </Modal>
 
-      {/* ── EDIT MODAL ───────────────────────────────────── */}
+      {/* ── EDIT MODAL ───────────────────────────────────────────────────── */}
       <Modal show={!!editModal} onClose={() => setEditModal(null)}
         title={`Edit Order — ${editModal?.po_number}`} subtitle="Edit pending order" wide
         footer={<>
           <button className="btn-c" onClick={() => setEditModal(null)}>Cancel</button>
           <button className="btn-p" onClick={saveEdit}>Save Changes</button>
         </>}>
-        <PoForm />
+        <PoFormContent {...formProps} />
       </Modal>
 
-      {/* ── VIEW MODAL ───────────────────────────────────── */}
+      {/* ── VIEW MODAL ───────────────────────────────────────────────────── */}
       <Modal show={!!viewModal} onClose={() => setViewModal(null)}
-        title={viewModal?.po_number || ''} subtitle={`${STATUS_META[viewModal?.status]?.icon || ''} ${viewModal?.supplier || 'No supplier'}`}
+        title={viewModal?.po_number || ''}
+        subtitle={`${STATUS_META[viewModal?.status]?.icon || ''} ${viewModal?.supplier || 'No supplier'}`}
         wide>
         {viewLoading || !viewModal?.items ? <div className="loading-wrap">Loading…</div> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {/* Overview */}
             <div className="view-strip">
               <div className="vs-item"><div className="vs-label">Status</div><div className="vs-val"><StatusBadge status={viewModal.status} /></div></div>
               <div className="vs-item"><div className="vs-label">Total</div><div className="vs-val" style={{ color: 'var(--accent)' }}>{fmtCur(viewModal.total_amount)}</div></div>
@@ -478,8 +1020,6 @@ export default function PurchaseOrderPage() {
               <div className="vs-item"><div className="vs-label">Items</div><div className="vs-val">{viewModal.items?.length || 0}</div></div>
               <div className="vs-item"><div className="vs-label">Expected</div><div className="vs-val" style={{ fontSize: 14 }}>{viewModal.expected_date?.split('T')[0] || '—'}</div></div>
             </div>
-
-            {/* Supplier */}
             {(viewModal.supplier || viewModal.supplier_phone || viewModal.supplier_address) && (
               <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 16, border: '1.5px solid var(--border)' }}>
                 <div className="view-section-title">🏪 Supplier</div>
@@ -491,26 +1031,19 @@ export default function PurchaseOrderPage() {
                 {viewModal.supplier_address && <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 8 }}>{viewModal.supplier_address}</div>}
               </div>
             )}
-
-            {/* Items table */}
             <div>
               <div className="view-section-title">🧺 Order Items</div>
               <div className="view-table">
                 <div className="vt-head">
                   <div style={{ flex: 2 }}>Item</div>
-                  <div style={{ width: 100 }}>Ordered</div>
-                  <div style={{ width: 100 }}>Received</div>
-                  <div style={{ width: 100 }}>₹/Unit</div>
-                  <div style={{ width: 110, textAlign: 'right' }}>Total</div>
+                  <div style={{ width: 100 }}>Ordered</div><div style={{ width: 100 }}>Received</div>
+                  <div style={{ width: 100 }}>₹/Unit</div><div style={{ width: 110, textAlign: 'right' }}>Total</div>
                 </div>
                 {(viewModal.items || []).map((item, idx) => {
                   const pending = parseFloat(item.ordered_qty) - parseFloat(item.received_qty || 0);
                   return (
                     <div key={idx} className="vt-row">
-                      <div style={{ flex: 2 }}>
-                        <strong>{item.item_name}</strong>
-                        <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.category_name}</div>
-                      </div>
+                      <div style={{ flex: 2 }}><strong>{item.item_name}</strong><div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.category_name}</div></div>
                       <div style={{ width: 100 }}>{item.ordered_qty} {item.unit_abbr}</div>
                       <div style={{ width: 100 }}>
                         <span style={{ color: parseFloat(item.received_qty) >= parseFloat(item.ordered_qty) ? 'var(--green)' : parseFloat(item.received_qty) > 0 ? '#118ab2' : 'var(--ink2)' }}>
@@ -525,49 +1058,41 @@ export default function PurchaseOrderPage() {
                 })}
                 <div className="vt-row vt-subtotal">
                   <div style={{ flex: 2 }}>Grand Total</div>
-                  <div style={{ width: 100 }}></div>
-                  <div style={{ width: 100 }}></div>
-                  <div style={{ width: 100 }}></div>
+                  <div style={{ width: 100 }} /><div style={{ width: 100 }} /><div style={{ width: 100 }} />
                   <div style={{ width: 110, textAlign: 'right' }}>{fmtCur(viewModal.total_amount)}</div>
                 </div>
               </div>
             </div>
-
-            {/* Notes */}
             {(viewModal.notes || viewModal.receive_notes) && (
               <div style={{ fontSize: 13, color: 'var(--ink2)' }}>
                 {viewModal.notes && <div>📝 {viewModal.notes}</div>}
-                {viewModal.receive_notes && <div style={{ marginTop: 4 }}>📥 Receive note: {viewModal.receive_notes}</div>}
+                {viewModal.receive_notes && <div style={{ marginTop: 4 }}>📥 {viewModal.receive_notes}</div>}
               </div>
             )}
-
-            {/* Receive button from view */}
             {(viewModal.status === 'pending' || viewModal.status === 'partial') && (
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="btn-p" onClick={() => { setViewModal(null); openReceive(viewModal); }}>
-                  📥 Receive Items
-                </button>
+                <button className="btn-p" onClick={() => { setViewModal(null); openReceive(viewModal); }}>📥 Receive Items</button>
               </div>
             )}
           </div>
         )}
-        <div className="mft"><button className="btn-c" onClick={() => setViewModal(null)}>Close</button></div>
+        <div className="mft">
+            <button className="btn-c" onClick={() => setViewModal(null)}>Close</button>
+            <button className="btn-p" style={{ background:'#6366f1' }} onClick={() => printPO(viewModal)}>🖨️ Print PO</button>
+        </div>
       </Modal>
 
-      {/* ── RECEIVE MODAL ───────────────────────────────── */}
+      {/* ── RECEIVE MODAL ────────────────────────────────────────────────── */}
       <Modal show={!!receiveModal} onClose={() => setReceiveModal(null)}
         title={`Receive Items — ${receiveModal?.po_number}`}
         subtitle="Enter quantities received. Stock will be updated immediately."
         wide
         footer={<>
           <button className="btn-c" onClick={() => setReceiveModal(null)}>Cancel</button>
-          <button className="btn-p" style={{ background: 'var(--green)' }} onClick={doReceive}>
-            ✅ Confirm Receipt & Update Stock
-          </button>
+          <button className="btn-p" style={{ background: 'var(--green)' }} onClick={doReceive}>✅ Confirm Receipt & Update Stock</button>
         </>}>
         {receiveModal && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {/* Bill details */}
             <div className="recipe-section">
               <div className="recipe-section-title">🧾 Bill Details</div>
               <div className="mgrid">
@@ -578,8 +1103,7 @@ export default function PurchaseOrderPage() {
                 </div>
                 <div>
                   <label className="mlabel">Bill Amount (₹)</label>
-                  <input className="mfi" type="number" placeholder="Total billed amount"
-                    value={receiveData.bill_amount}
+                  <input className="mfi" type="number" placeholder="Total billed amount" value={receiveData.bill_amount}
                     onChange={e => setReceiveData(d => ({ ...d, bill_amount: e.target.value }))} />
                 </div>
                 <div className="mfull">
@@ -589,10 +1113,7 @@ export default function PurchaseOrderPage() {
                 </div>
               </div>
             </div>
-
             <hr className="mdiv" />
-
-            {/* Items to receive */}
             <div className="recipe-section">
               <div className="recipe-section-title">📦 Items Received</div>
               <div className="ri-table">
@@ -607,31 +1128,16 @@ export default function PurchaseOrderPage() {
                   const max = parseFloat(item.ordered_qty) - parseFloat(item.already_received || 0);
                   return (
                     <div key={idx} className="ri-row2">
-                      <div style={{ flex: 2 }}>
-                        <strong>{item.item_name}</strong>
-                        <div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.unit_abbr}</div>
-                      </div>
+                      <div style={{ flex: 2 }}><strong>{item.item_name}</strong><div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.unit_abbr}</div></div>
                       <div style={{ width: 90, fontSize: 13 }}>{item.ordered_qty} {item.unit_abbr}</div>
-                      <div style={{ width: 90, fontSize: 13, color: item.already_received > 0 ? '#118ab2' : 'var(--ink2)' }}>
-                        {item.already_received || 0}
-                      </div>
+                      <div style={{ width: 90, fontSize: 13, color: item.already_received > 0 ? '#118ab2' : 'var(--ink2)' }}>{item.already_received || 0}</div>
                       <div style={{ width: 110 }}>
-                        <input
-                          className="ri-qty"
-                          type="number"
-                          min="0"
-                          max={max}
-                          placeholder="0"
-                          value={item.received_qty}
-                          style={{ width: 100 }}
+                        <input className="ri-qty" type="number" min="0" max={max} placeholder="0"
+                          value={item.received_qty} style={{ width: 100 }}
                           onChange={e => {
                             const val = Math.min(parseFloat(e.target.value) || 0, max);
-                            setReceiveData(d => ({
-                              ...d,
-                              items: d.items.map((x, i) => i === idx ? { ...x, received_qty: val } : x)
-                            }));
-                          }}
-                        />
+                            setReceiveData(d => ({ ...d, items: d.items.map((x, i) => i === idx ? { ...x, received_qty: val } : x) }));
+                          }} />
                         {max > 0 && <div style={{ fontSize: 10, color: 'var(--ink2)', marginTop: 2 }}>max {max}</div>}
                       </div>
                       <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontWeight: 700 }}>
@@ -640,7 +1146,6 @@ export default function PurchaseOrderPage() {
                     </div>
                   );
                 })}
-                {/* Summary */}
                 <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', background: 'rgba(29,185,126,.04)', borderTop: '2px solid rgba(29,185,126,.2)' }}>
                   <span style={{ fontSize: 13, color: 'var(--ink2)', fontWeight: 600 }}>Stock Value Being Added</span>
                   <strong style={{ color: 'var(--green)', fontSize: 16 }}>
@@ -653,7 +1158,7 @@ export default function PurchaseOrderPage() {
         )}
       </Modal>
 
-      {/* ── CANCEL / DELETE CONFIRMS ─────────────────────── */}
+      {/* ── CONFIRM MODALS ───────────────────────────────────────────────── */}
       <ConfirmModal show={!!cancelModal} onClose={() => setCancelModal(null)} onConfirm={doCancel}
         title="Cancel Order" message={`Cancel order ${cancelModal?.po_number}? This cannot be undone.`} />
       <ConfirmModal show={!!deleteModal} onClose={() => setDeleteModal(null)} onConfirm={doDelete}

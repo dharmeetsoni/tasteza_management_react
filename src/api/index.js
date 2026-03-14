@@ -151,6 +151,13 @@ export const receivePurchaseOrder = (id, d)  => oMutate('post',  `/purchaseorder
 export const cancelPurchaseOrder  = (id)     => oMutate('patch', `/purchaseorders/${id}/cancel`);
 export const deletePurchaseOrder  = (id)     => oMutate('delete',`/purchaseorders/${id}`);
 
+// ── Vendors ───────────────────────────────────────────────
+export const getVendors   = ()      => oGet('/vendors');
+export const getVendor    = (id)    => oGet(`/vendors/${id}`);
+export const createVendor = (d)     => oMutate('post',   '/vendors', d);
+export const updateVendor = (id, d) => oMutate('put',    `/vendors/${id}`, d);
+export const deleteVendor = (id)    => oMutate('delete', `/vendors/${id}`);
+
 // ── Tables ────────────────────────────────────────────────
 export const getTables      = ()           => oGet('/tables');
 export const createTable    = (d)          => oMutate('post',   '/tables', d);
@@ -186,9 +193,9 @@ export const reKot             = (orderId, d)         => oMutate('post',   `/ord
 // ── KOT — QUEUEABLE ───────────────────────────────────────
 export const getKOTs          = (p)       => oGet('/kot', p);
 export const getKOT           = (id)      => oGet(`/kot/${id}`);
-export const updateKOTStatus  = (id, st)  => oMutate('patch', `/kot/${id}/status`, { status: st }, true);
-export const updateKOTItemStatus = (kotId, itemId, st) => oMutate('patch', `/kot/${kotId}/items/${itemId}/status`, { status: st }, true);
-export const deleteKOT        = (id)       => oMutate('delete', `/kot/${id}`);
+export const updateKOTStatus     = (id, st)              => oMutate('patch', `/kot/${id}/status`, { status: st }, true);
+export const updateKOTItemStatus = (kotId, itemId, st)   => oMutate('patch', `/kot/${kotId}/items/${itemId}/status`, { status: st }, true);
+export const deleteKOT           = (id)                  => oMutate('delete', `/kot/${id}`);
 
 // ── Zomato ────────────────────────────────────────────────
 export const getZomatoSettings  = ()      => oGet('/zomato/settings');
@@ -275,4 +282,3 @@ export const manageBill       = (id,d) => oMutate('put',    `/orders/${id}/manag
 
 // Daily category consumption
 export const getDailyCategoryConsumption = (p) => oGet('/reports/inventory/daily-category', p);
-
