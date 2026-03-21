@@ -175,7 +175,9 @@ export const deleteCoupon    = (id)        => oMutate('delete', `/coupons/${id}`
 export const getOrders         = ()       => oGet('/orders');
 export const getOrder          = (id)     => oGet(`/orders/${id}`);
 export const createOrder       = (d)      => oMutate('post',  '/orders', d,           true);
-export const createPastOrder   = (d)      => oMutate('post',  '/orders/past', d);
+export const createPastOrder      = (d)         => oMutate('post',  '/orders/past', d);
+export const zomatoImport         = (d)         => oMutate('post',  '/orders/zomato-import', d);
+export const fixZomatoOrderItem   = (itemId, d) => oMutate('patch', `/orders/zomato-item/${itemId}`, d);
 export const updateOrderItems  = (id, d)  => oMutate('put',   `/orders/${id}/items`, d, true);
 export const sendKOT           = (id, d)  => oMutate('post',  `/orders/${id}/kot`, d, true);
 export const generateBill      = (id, d)  => oMutate('post',  `/orders/${id}/bill`, d, true);
@@ -193,9 +195,9 @@ export const reKot             = (orderId, d)         => oMutate('post',   `/ord
 // ── KOT — QUEUEABLE ───────────────────────────────────────
 export const getKOTs          = (p)       => oGet('/kot', p);
 export const getKOT           = (id)      => oGet(`/kot/${id}`);
-export const updateKOTStatus     = (id, st)              => oMutate('patch', `/kot/${id}/status`, { status: st }, true);
-export const updateKOTItemStatus = (kotId, itemId, st)   => oMutate('patch', `/kot/${kotId}/items/${itemId}/status`, { status: st }, true);
-export const deleteKOT           = (id)                  => oMutate('delete', `/kot/${id}`);
+export const updateKOTStatus     = (id, st)            => oMutate('patch', `/kot/${id}/status`, { status: st }, true);
+export const updateKOTItemStatus = (kotId, itemId, st) => oMutate('patch', `/kot/${kotId}/items/${itemId}/status`, { status: st }, true);
+export const deleteKOT           = (id)                => oMutate('delete', `/kot/${id}`);
 
 // ── Zomato ────────────────────────────────────────────────
 export const getZomatoSettings  = ()      => oGet('/zomato/settings');

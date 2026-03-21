@@ -36,10 +36,11 @@ import QuotationPage      from '../pages/QuotationPage';
 import KDSPage            from '../pages/KDSPage';
 import DashboardPage      from '../pages/DashboardPage';
 import VendorPage         from '../pages/VendorPage';
+import ZomatoImportPage   from '../pages/ZomatoImportPage';
 
 const ROLE_DEFAULTS = {
   admin:   ['*'],
-  manager: ['dashboard','sales','kot','orders','kds','coupons','zomato','inventory','purchaseorders','purchases','vendors',
+  manager: ['dashboard','sales','kot','orders','kds','coupons','zomato','zomatoimport','inventory','purchaseorders','purchases','vendors',
              'categories','units','recipes','menuitems','courses','salary','fuel',
              'salarymgmt','expenses','expcategories','staff','reports','profitloss',
              'pastorder','consumption','quotation','billsettings','profile'],
@@ -55,6 +56,7 @@ const NAV = [
   { id:'kds',            label:'KDS — Kitchen',      icon:'🖥️'                    },
   { id:'coupons',        label:'Coupons',            icon:'🎟️'                    },
   { id:'zomato',         label:'Zomato Menu',        icon:'🛵'                    },
+  { id:'zomatoimport',   label:'Zomato Import',      icon:'🍊'                    },
   { sep:true, id:'s0'  },
   { id:'inventory',      label:'Inventory',          icon:'📦', section:'STOCK'   },
   { id:'purchaseorders', label:'Purchase Orders',    icon:'📋'                    },
@@ -85,7 +87,7 @@ const NAV = [
 
 const PAGE_TITLES = {
   dashboard:'Dashboard',
-  sales:'Sales & POS', kot:'KOT Manager', orders:'Order History', coupons:'Coupons', zomato:'Zomato Menu',
+  sales:'Sales & POS', kot:'KOT Manager', orders:'Order History', coupons:'Coupons', zomato:'Zomato Menu', zomatoimport:'Zomato Import',
   inventory:'Inventory', purchaseorders:'Purchase Orders', vendors:'Vendors', purchases:'Purchase History',
   categories:'Categories', units:'Units', recipes:'Recipes', menuitems:'Menu Items',
   kds:'KDS — Kitchen Display', courses:'Courses', salarymgmt:'Salary Manager', expenses:'Expense Manager', fuel:'Fuel Manager',
@@ -155,6 +157,7 @@ export default function AppShell() {
       case 'kds':            return <KDSPage />;
       case 'coupons':        return <CouponsPage />;
       case 'zomato':         return <ZomatoPage />;
+      case 'zomatoimport':   return <ZomatoImportPage />;
       case 'inventory':      return <InventoryPage />;
       case 'purchaseorders': return <PurchaseOrderPage />;
       case 'vendors':        return <VendorPage />;

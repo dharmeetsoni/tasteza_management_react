@@ -16,6 +16,55 @@ const STATUS_META = {
   cancelled: { label: 'Cancelled', color: '#e84a5f', bg: 'rgba(232,74,95,.10)',  icon: '❌' },
 };
 
+// ── Unit conversion table (mirrors inventoryDeduct.js) ───────────────────────
+// mult = how many base-units this unit contains (g=1, kg=1000, ml=1, l=1000)
+const UNIT_TABLE = [
+  { mult: 1000000, keys: ['tonne','ton','t'] },
+  { mult: 1000,    keys: ['kg','kgs','kilogram','kilograms','kilo'] },
+  { mult: 1,       keys: ['g','gm','gr','gram','grams','grm'] },
+  { mult: 0.001,   keys: ['mg','milligram','milligrams'] },
+  { mult: 1000,    keys: ['l','lt','ltr','litre','liter','liters','litres','lts'] },
+  { mult: 1,       keys: ['ml','millilitre','milliliter','mls'] },
+  { mult: 240,     keys: ['cup','cups'] },
+  { mult: 15,      keys: ['tbsp','tablespoon','tablespoons'] },
+  { mult: 5,       keys: ['tsp','teaspoon','teaspoons'] },
+  { mult: 1,       keys: ['pcs','pc','piece','pieces','nos','no','number',
+                           'portion','portions','plate','plates',
+                           'unit','units','serve','serves','each'] },
+];
+
+function getUnitMult(abbr, name, convFactor) {
+  const a = (abbr  || '').trim().toLowerCase();
+  const n = (name  || '').trim().toLowerCase();
+  for (const e of UNIT_TABLE) {
+    if (e.keys.includes(a) || e.keys.includes(n)) return e.mult;
+  }
+  const cf = parseFloat(convFactor);
+  return cf > 0 ? cf : 1;
+}
+
+// Convert a quantity/price between two units using unit objects {abbreviation, name, conversion_factor}
+// convertPrice(100, kgUnit, gUnit) → 0.1  (₹100/kg → ₹0.1/g)
+// Price scales INVERSELY to unit size: bigger unit = higher price per unit
+function convertPrice(price, fromUnit, toUnit) {
+  if (!fromUnit || !toUnit || fromUnit.id === toUnit.id) return price;
+  const fromMult = getUnitMult(fromUnit.abbreviation, fromUnit.name, fromUnit.conversion_factor);
+  const toMult   = getUnitMult(toUnit.abbreviation,   toUnit.name,   toUnit.conversion_factor);
+  if (fromMult === toMult || fromMult === 0) return price;
+  // e.g. kg(1000) → g(1): price * (1/1000) = price * (toMult/fromMult)
+  return price * (toMult / fromMult);
+}
+
+// Convert a quantity between two units
+// convertQty(1, kgUnit, gUnit) → 1000
+function convertQty(qty, fromUnit, toUnit) {
+  if (!fromUnit || !toUnit || fromUnit.id === toUnit.id) return qty;
+  const fromMult = getUnitMult(fromUnit.abbreviation, fromUnit.name, fromUnit.conversion_factor);
+  const toMult   = getUnitMult(toUnit.abbreviation,   toUnit.name,   toUnit.conversion_factor);
+  if (fromMult === toMult || toMult === 0) return qty;
+  return qty * (fromMult / toMult);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PO Print Slip — A4 printable purchase order
 // ─────────────────────────────────────────────────────────────────────────────
@@ -579,13 +628,26 @@ export default function PurchaseOrderPage() {
   const updatePoItem = useCallback((idx, field, val) => {
     setPoItems(prev => {
       const next = [...prev];
-      next[idx] = { ...next[idx], [field]: val };
+      const old  = next[idx];
+      next[idx]  = { ...old, [field]: val };
+
+      // ── Unit change: convert unit_price proportionally ──────────────────
+      // e.g. switching from kg → g: ₹100/kg becomes ₹0.1/g
+      if (field === 'unit_id' && old.unit_id && val && old.unit_price) {
+        const fromUnit = units.find(u => u.id === parseInt(old.unit_id));
+        const toUnit   = units.find(u => u.id === parseInt(val));
+        if (fromUnit && toUnit && fromUnit.id !== toUnit.id) {
+          const newPrice = convertPrice(parseFloat(old.unit_price), fromUnit, toUnit);
+          next[idx].unit_price = +newPrice.toFixed(4);
+        }
+      }
+
       const q = parseFloat(field === 'quantity'   ? val : next[idx].quantity)   || 0;
       const p = parseFloat(field === 'unit_price' ? val : next[idx].unit_price) || 0;
-      next[idx].total = q * p;
+      next[idx].total = +(q * p).toFixed(2);
       return next;
     });
-  }, []);
+  }, [units]);
 
   const removePoItem = useCallback((idx) => {
     setPoItems(prev => {
@@ -627,7 +689,14 @@ export default function PurchaseOrderPage() {
       const d = await getPurchaseOrder(po.id);
       if (d.success) {
         const p = d.data;
-        setForm({ supplier: p.supplier || '', supplier_phone: p.supplier_phone || '', supplier_address: p.supplier_address || '', expected_date: p.expected_date?.split('T')[0] || '', notes: p.notes || '' });
+        setForm({
+          vendor_id:        p.vendor_id  ? String(p.vendor_id) : '',
+          supplier:         p.supplier   || '',
+          supplier_phone:   p.supplier_phone   || '',
+          supplier_address: p.supplier_address || '',
+          expected_date:    p.expected_date?.split('T')[0] || '',
+          notes:            p.notes || '',
+        });
         setPoItems(p.items.map(i => ({ id: i.id, inventory_item_id: i.inventory_item_id, unit_id: i.unit_id || '', quantity: i.ordered_qty, unit_price: i.unit_price, total: i.total_price })));
         setEditModal(p);
       }
@@ -652,10 +721,18 @@ export default function PurchaseOrderPage() {
         setReceiveData({
           invoice_no: p.invoice_no || '', bill_amount: p.bill_amount || '', notes: '',
           items: p.items.map(i => ({
-            item_id: i.id, item_name: i.item_name, unit_abbr: i.unit_abbr,
-            ordered_qty: i.ordered_qty, already_received: i.received_qty || 0,
-            received_qty: Math.max(0, parseFloat(i.ordered_qty) - parseFloat(i.received_qty || 0)),
-            unit_price: i.unit_price,
+            item_id:          i.id,
+            item_name:        i.item_name,
+            inventory_item_id: i.inventory_item_id,
+            unit_id:          i.unit_id,          // current PO unit
+            unit_abbr:        i.unit_abbr,
+            ordered_qty:      i.ordered_qty,
+            already_received: i.received_qty || 0,
+            received_qty:     Math.max(0, parseFloat(i.ordered_qty) - parseFloat(i.received_qty || 0)),
+            unit_price:       i.unit_price,
+            new_unit_price:   i.unit_price,
+            receive_unit_id:  i.unit_id,          // unit user wants to receive in (can change)
+            receive_unit_abbr: i.unit_abbr,
           }))
         });
         setReceiveModal(p);
@@ -665,98 +742,80 @@ export default function PurchaseOrderPage() {
 
   // ── Print PO ──────────────────────────────────────────────────────────────
   const printPO = async (po) => {
-    // Fetch full details if needed, then open print window
     let fullPO = po;
-    if (!po.items) {
+    if (!po.items || !po.items.length) {
       const d = await getPurchaseOrder(po.id);
       if (d.success) fullPO = d.data;
     }
-    // Render into a hidden div, capture HTML, open print window
-    const tempDiv = document.createElement('div');
-    document.body.appendChild(tempDiv);
-    const React2 = require ? React : window.React;
-    // Use innerHTML approach: render POPrint to string via a temporary hidden ref
-    const printContent = printRef.current?.innerHTML;
-    if (!printContent) {
-      // fallback: build inline
-      _doPrint(fullPO, settings);
-    } else {
-      _doPrint(fullPO, settings);
-    }
-    document.body.removeChild(tempDiv);
-  };
-
-  const _doPrint = (po, settings) => {
-    const items = po.items || [];
+    const items = fullPO.items || [];
     const total = items.reduce((s, i) => s + parseFloat(i.total_price || 0), 0);
     const now = new Date();
     const printDate = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
     const printTime = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const expectedDate = po.expected_date
-      ? new Date(po.expected_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    const expectedDate = fullPO.expected_date
+      ? new Date(fullPO.expected_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
       : '—';
-    const statusMeta = { pending: { label:'Pending', color:'#b07a00' }, partial: { label:'Partial', color:'#118ab2' }, received: { label:'Received', color:'#1db97e' }, cancelled: { label:'Cancelled', color:'#e84a5f' } };
-    const sm = statusMeta[po.status] || statusMeta.pending;
+    const statusMeta = { pending:'#b07a00', partial:'#118ab2', received:'#1db97e', cancelled:'#e84a5f' };
+    const statusLabel = { pending:'Pending', partial:'Partial', received:'Received', cancelled:'Cancelled' };
+    const sc = statusMeta[fullPO.status] || '#888';
+    const sl = statusLabel[fullPO.status] || fullPO.status;
+
+    const infoRow = (l, v) => v ? `<tr><td style="padding:3px 0;color:#555;font-size:12px;width:130px;vertical-align:top">${l}</td><td style="padding:3px 0;font-weight:600;font-size:12px">${v}</td></tr>` : '';
 
     const itemRows = items.map((item, i) => `
       <tr style="background:${i%2===0?'#fff':'#f8f8f8'};border-bottom:1px solid #e0e0e0">
         <td style="padding:8px 10px;color:#888;font-size:11px">${i+1}</td>
-        <td style="padding:8px 10px;font-weight:600">${item.item_name || ''}</td>
-        <td style="padding:8px 10px;font-size:11px;color:#666">${item.category_name || '—'}</td>
+        <td style="padding:8px 10px;font-weight:600">${item.item_name||''}</td>
+        <td style="padding:8px 10px;font-size:11px;color:#666">${item.category_name||'—'}</td>
         <td style="padding:8px 10px;text-align:center">${item.ordered_qty}</td>
-        <td style="padding:8px 10px;text-align:center;font-size:11px;color:#666">${item.unit_abbr || '—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:11px;color:#666">${item.unit_abbr||'—'}</td>
         <td style="padding:8px 10px;text-align:right">₹${parseFloat(item.unit_price).toFixed(2)}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:700">₹${parseFloat(item.total_price).toFixed(2)}</td>
       </tr>`).join('');
 
-    const infoRow = (label, value) => value ? `<tr><td style="padding:3px 0;color:#555;font-size:12px;width:130px;vertical-align:top">${label}</td><td style="padding:3px 0;font-weight:600;font-size:12px">${value}</td></tr>` : '';
-
-    const html = `<!DOCTYPE html><html><head><title>PO - ${po.po_number}</title>
+    const html = `<!DOCTYPE html><html><head><title>PO - ${fullPO.po_number}</title>
     <style>
       *{box-sizing:border-box;margin:0;padding:0}
       body{font-family:Arial,sans-serif;font-size:13px;color:#111;background:#fff;padding:32px}
       @media print{body{padding:16px}@page{margin:10mm;size:A4}}
       table{border-collapse:collapse;width:100%}
     </style></head><body>
-
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #111">
       <div>
-        <div style="font-size:22px;font-weight:900;letter-spacing:-0.5px">${settings?.restaurant_name || 'Restaurant'}</div>
-        ${settings?.address ? `<div style="font-size:11px;color:#555;margin-top:2px">${settings.address}</div>` : ''}
-        ${settings?.phone   ? `<div style="font-size:11px;color:#555">📞 ${settings.phone}</div>` : ''}
-        ${settings?.email   ? `<div style="font-size:11px;color:#555">✉️ ${settings.email}</div>` : ''}
-        ${settings?.gst_number ? `<div style="font-size:11px;color:#555">GST: ${settings.gst_number}</div>` : ''}
+        <div style="font-size:22px;font-weight:900">${settings?.restaurant_name||'Restaurant'}</div>
+        ${settings?.address?`<div style="font-size:11px;color:#555;margin-top:2px">${settings.address}</div>`:''}
+        ${settings?.phone?`<div style="font-size:11px;color:#555">📞 ${settings.phone}</div>`:''}
+        ${settings?.email?`<div style="font-size:11px;color:#555">✉️ ${settings.email}</div>`:''}
+        ${settings?.gst_number?`<div style="font-size:11px;color:#555">GST: ${settings.gst_number}</div>`:''}
       </div>
       <div style="text-align:right">
-        <div style="font-size:20px;font-weight:900;letter-spacing:1px;color:#c0392b">PURCHASE ORDER</div>
-        <div style="font-size:22px;font-weight:900;font-family:monospace;margin-top:4px">${po.po_number}</div>
+        <div style="font-size:20px;font-weight:900;color:#c0392b">PURCHASE ORDER</div>
+        <div style="font-size:22px;font-weight:900;font-family:monospace;margin-top:4px">${fullPO.po_number}</div>
         <div style="font-size:11px;color:#555;margin-top:6px">Printed: ${printDate} ${printTime}</div>
-        <div style="margin-top:6px;display:inline-block;padding:3px 10px;border-radius:4px;background:#fff3cd;color:${sm.color};font-weight:700;font-size:12px;border:1px solid ${sm.color}">${sm.label}</div>
+        <div style="margin-top:6px;display:inline-block;padding:3px 10px;border-radius:4px;color:${sc};font-weight:700;font-size:12px;border:1px solid ${sc}">${sl}</div>
       </div>
     </div>
-
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
       <div>
         <div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#555;margin-bottom:8px;border-bottom:1px solid #ddd;padding-bottom:4px">Supplier / Vendor</div>
         <table style="width:auto"><tbody>
-          ${infoRow('Name',    po.supplier)}
-          ${infoRow('Phone',   po.supplier_phone)}
-          ${infoRow('Address', po.supplier_address)}
-          ${infoRow('Invoice', po.invoice_no)}
-          ${!po.supplier ? '<tr><td style="font-size:12px;color:#999;font-style:italic">No supplier details</td></tr>' : ''}
+          ${infoRow('Name', fullPO.supplier)}
+          ${infoRow('Phone', fullPO.supplier_phone)}
+          ${infoRow('Address', fullPO.supplier_address)}
+          ${infoRow('Invoice', fullPO.invoice_no)}
+          ${!fullPO.supplier?'<tr><td style="font-size:12px;color:#999;font-style:italic">No supplier details</td></tr>':''}
         </tbody></table>
       </div>
       <div>
         <div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#555;margin-bottom:8px;border-bottom:1px solid #ddd;padding-bottom:4px">Order Details</div>
         <table style="width:auto"><tbody>
-          ${infoRow('PO Number',   po.po_number)}
+          ${infoRow('PO Number', fullPO.po_number)}
           ${infoRow('Expected By', expectedDate)}
-          ${infoRow('Created By',  po.created_by_name)}
-          ${po.bill_amount ? infoRow('Bill Amount', `₹${parseFloat(po.bill_amount).toFixed(2)}`) : ''}
+          ${infoRow('Created By', fullPO.created_by_name)}
+          ${fullPO.bill_amount?infoRow('Bill Amount',`₹${parseFloat(fullPO.bill_amount).toFixed(2)}`):'' }
         </tbody></table>
       </div>
     </div>
-
     <table>
       <thead>
         <tr style="background:#111;color:#fff">
@@ -778,17 +837,13 @@ export default function PurchaseOrderPage() {
         </tr>
       </tfoot>
     </table>
-
-    ${po.notes ? `<div style="margin-top:20px;padding:10px 14px;background:#fffbe6;border:1px solid #ffe08a;border-radius:6px;font-size:12px"><strong>Notes:</strong> ${po.notes}</div>` : ''}
-
+    ${fullPO.notes?`<div style="margin-top:20px;padding:10px 14px;background:#fffbe6;border:1px solid #ffe08a;border-radius:6px;font-size:12px"><strong>Notes:</strong> ${fullPO.notes}</div>`:''}
     <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
-      ${['Prepared By','Authorised By','Received By'].map(l => `<div style="text-align:center"><div style="border-top:1px solid #888;padding-top:6px;font-size:11px;color:#666">${l}</div></div>`).join('')}
+      ${['Prepared By','Authorised By','Received By'].map(l=>`<div style="text-align:center"><div style="border-top:1px solid #888;padding-top:6px;font-size:11px;color:#666">${l}</div></div>`).join('')}
     </div>
-
     <div style="margin-top:24px;text-align:center;font-size:10px;color:#aaa;border-top:1px solid #eee;padding-top:10px">
-      Generated by ${settings?.restaurant_name || 'Tasteza'} · ${printDate}
+      Generated by ${settings?.restaurant_name||'Tasteza'} · ${printDate}
     </div>
-
     <script>window.onload=()=>{window.print();window.close()}<\/script>
     </body></html>`;
 
@@ -796,6 +851,7 @@ export default function PurchaseOrderPage() {
     win.document.write(html);
     win.document.close();
   };
+
   const saveCreate = async () => {
     const validItems = poItems.filter(i => i.inventory_item_id && i.quantity);
     if (!validItems.length) { toast('Add at least one item with quantity.', 'er'); return; }
@@ -823,7 +879,12 @@ export default function PurchaseOrderPage() {
     try {
       const d = await receivePurchaseOrder(receiveModal.id, {
         invoice_no: receiveData.invoice_no, bill_amount: receiveData.bill_amount, notes: receiveData.notes,
-        items: receiveData.items.map(i => ({ item_id: i.item_id, received_qty: i.received_qty }))
+        items: receiveData.items.map(i => ({
+          item_id:          i.item_id,
+          received_qty:     i.received_qty,
+          new_unit_price:   i.new_unit_price,
+          receive_unit_id:  i.receive_unit_id,   // unit received in (may differ from PO unit)
+        }))
       });
       if (d.success) { toast('Stock updated! ✅', 'ok'); setReceiveModal(null); load(); }
       else toast(d.message || 'Error', 'er');
@@ -1119,29 +1180,85 @@ export default function PurchaseOrderPage() {
               <div className="ri-table">
                 <div className="ri-thead">
                   <div style={{ flex: 2 }}>Item</div>
-                  <div style={{ width: 90 }}>Ordered</div>
-                  <div style={{ width: 90 }}>Already Rcvd</div>
-                  <div style={{ width: 110 }}>Receiving Now *</div>
-                  <div style={{ width: 100, textAlign: 'right' }}>Value</div>
+                  <div style={{ width: 80 }}>Ordered</div>
+                  <div style={{ width: 75 }}>Rcvd</div>
+                  <div style={{ width: 100 }}>Receiving Qty *</div>
+                  <div style={{ width: 110 }}>Receive In</div>
+                  <div style={{ width: 110 }}>₹/Unit (Actual)</div>
+                  <div style={{ width: 90, textAlign: 'right' }}>Value</div>
                 </div>
                 {receiveData.items.map((item, idx) => {
                   const max = parseFloat(item.ordered_qty) - parseFloat(item.already_received || 0);
+                  const priceChanged = parseFloat(item.new_unit_price) !== parseFloat(item.unit_price);
+                  const unitChanged  = item.receive_unit_id !== item.unit_id;
                   return (
                     <div key={idx} className="ri-row2">
-                      <div style={{ flex: 2 }}><strong>{item.item_name}</strong><div style={{ fontSize: 11, color: 'var(--ink2)' }}>{item.unit_abbr}</div></div>
-                      <div style={{ width: 90, fontSize: 13 }}>{item.ordered_qty} {item.unit_abbr}</div>
-                      <div style={{ width: 90, fontSize: 13, color: item.already_received > 0 ? '#118ab2' : 'var(--ink2)' }}>{item.already_received || 0}</div>
-                      <div style={{ width: 110 }}>
-                        <input className="ri-qty" type="number" min="0" max={max} placeholder="0"
-                          value={item.received_qty} style={{ width: 100 }}
+                      <div style={{ flex: 2 }}>
+                        <strong>{item.item_name}</strong>
+                        <div style={{ fontSize: 11, color: 'var(--ink2)' }}>
+                          PO unit: {item.unit_abbr}
+                        </div>
+                      </div>
+                      <div style={{ width: 80, fontSize: 13 }}>
+                        {item.ordered_qty} {item.unit_abbr}
+                      </div>
+                      <div style={{ width: 75, fontSize: 13, color: item.already_received > 0 ? '#118ab2' : 'var(--ink2)' }}>
+                        {item.already_received || 0}
+                      </div>
+                      <div style={{ width: 100 }}>
+                        <input className="ri-qty" type="number" min="0" placeholder="0"
+                          value={item.received_qty} style={{ width: '100%' }}
                           onChange={e => {
-                            const val = Math.min(parseFloat(e.target.value) || 0, max);
+                            const val = parseFloat(e.target.value) || 0;
                             setReceiveData(d => ({ ...d, items: d.items.map((x, i) => i === idx ? { ...x, received_qty: val } : x) }));
                           }} />
-                        {max > 0 && <div style={{ fontSize: 10, color: 'var(--ink2)', marginTop: 2 }}>max {max}</div>}
+                        {max > 0 && (
+                          <div style={{ fontSize: 10, color: 'var(--ink2)', marginTop: 2 }}>
+                            max {max} {item.unit_abbr}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontWeight: 700 }}>
-                        {fmtCur((parseFloat(item.received_qty) || 0) * parseFloat(item.unit_price))}
+                      <div style={{ width: 110 }}>
+                        <select className="ri-sel" style={{ width: '100%' }}
+                          value={item.receive_unit_id || ''}
+                          onChange={e => {
+                            const newUnitId = parseInt(e.target.value);
+                            const fromUnit  = units.find(u => u.id === parseInt(item.receive_unit_id || item.unit_id));
+                            const toUnit    = units.find(u => u.id === newUnitId);
+                            const newAbbr   = toUnit?.abbreviation || item.unit_abbr;
+                            // Convert price when unit changes
+                            const newPrice  = (fromUnit && toUnit)
+                              ? +convertPrice(parseFloat(item.new_unit_price || item.unit_price), fromUnit, toUnit).toFixed(4)
+                              : item.new_unit_price;
+                            setReceiveData(d => ({ ...d, items: d.items.map((x, i) => i === idx ? {
+                              ...x,
+                              receive_unit_id:   newUnitId,
+                              receive_unit_abbr: newAbbr,
+                              new_unit_price:    newPrice,
+                            } : x) }));
+                          }}>
+                          {units.map(u => <option key={u.id} value={u.id}>{u.abbreviation}</option>)}
+                        </select>
+                        {unitChanged && (
+                          <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2, fontWeight: 700 }}>
+                            ≠ PO unit ({item.unit_abbr})
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ width: 110 }}>
+                        <input className="ri-qty" type="number" min="0" placeholder="₹0"
+                          value={item.new_unit_price} style={{ width: '100%' }}
+                          onChange={e => {
+                            setReceiveData(d => ({ ...d, items: d.items.map((x, i) => i === idx ? { ...x, new_unit_price: e.target.value } : x) }));
+                          }} />
+                        {priceChanged && (
+                          <div style={{ fontSize: 10, marginTop: 2, color: '#f59e0b', fontWeight: 700 }}>
+                            was ₹{parseFloat(item.unit_price).toFixed(2)}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ width: 90, textAlign: 'right', fontSize: 13, fontWeight: 700 }}>
+                        {fmtCur((parseFloat(item.received_qty) || 0) * parseFloat(item.new_unit_price || item.unit_price))}
                       </div>
                     </div>
                   );
@@ -1149,7 +1266,7 @@ export default function PurchaseOrderPage() {
                 <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', background: 'rgba(29,185,126,.04)', borderTop: '2px solid rgba(29,185,126,.2)' }}>
                   <span style={{ fontSize: 13, color: 'var(--ink2)', fontWeight: 600 }}>Stock Value Being Added</span>
                   <strong style={{ color: 'var(--green)', fontSize: 16 }}>
-                    {fmtCur(receiveData.items.reduce((s, i) => s + (parseFloat(i.received_qty) || 0) * parseFloat(i.unit_price), 0))}
+                    {fmtCur(receiveData.items.reduce((s, i) => s + (parseFloat(i.received_qty) || 0) * parseFloat(i.new_unit_price || i.unit_price), 0))}
                   </strong>
                 </div>
               </div>
@@ -1163,6 +1280,7 @@ export default function PurchaseOrderPage() {
         title="Cancel Order" message={`Cancel order ${cancelModal?.po_number}? This cannot be undone.`} />
       <ConfirmModal show={!!deleteModal} onClose={() => setDeleteModal(null)} onConfirm={doDelete}
         title="Delete Order" message={`Permanently delete ${deleteModal?.po_number}?`} />
+
     </div>
   );
 }

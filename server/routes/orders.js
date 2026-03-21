@@ -123,7 +123,8 @@ router.get('/all/list', async (req, res) => {
         u.name AS created_by_name,
         b.name AS billed_by_name,
         DATE_FORMAT(o.created_at,'%Y-%m-%d') AS date,
-        DATE_FORMAT(o.paid_at,'%Y-%m-%d %H:%i') AS paid_at_fmt
+        DATE_FORMAT(o.paid_at,'%Y-%m-%d %H:%i') AS paid_at_fmt,
+        (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count
       FROM orders o
       LEFT JOIN restaurant_tables t ON o.table_id = t.id
       LEFT JOIN users u ON o.created_by = u.id
@@ -581,9 +582,198 @@ router.put('/:id/manage', authorize('admin','manager'), async (req, res) => {
   } finally { conn.release(); }
 });
 
+// ── ZOMATO CSV IMPORT ────────────────────────────────────────────────────────
+// POST /api/orders/zomato-import
+// Accepts parsed CSV rows, matches items to menu_items, creates paid orders
+router.post('/zomato-import', authorize('admin','manager'), async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { orders: csvOrders } = req.body;
+    if (!csvOrders || !csvOrders.length)
+      return res.status(400).json({ success: false, message: 'No orders provided.' });
+
+    // Load all menu items for matching
+    const [menuItems] = await conn.query(
+      'SELECT id, name, selling_price, gst_percent, recipe_id FROM menu_items WHERE is_active=1'
+    );
+    // Build exact match map (lowercase name → menu item)
+    const menuMap = {};
+    menuItems.forEach(mi => { menuMap[mi.name.toLowerCase().trim()] = mi; });
+
+    const imported = [];
+    const skipped  = [];
+
+    for (const row of csvOrders) {
+      // Skip if already imported (dedup by zomato_order_id)
+      const [[existing]] = await conn.query(
+        'SELECT id FROM orders WHERE zomato_order_id=?', [row.zomato_order_id]
+      );
+      if (existing) { skipped.push({ ...row, reason: 'Already imported' }); continue; }
+
+      // Parse items: "2 x Full Thali, 1 x Paneer Chilli Dry"
+      const parsedItems = [];
+      let hasUnmatched = false;
+      for (const part of row.items_str.split(',')) {
+        const m = part.trim().match(/^(\d+)\s*x\s*(.+)$/i);
+        if (!m) continue;
+        const qty      = parseInt(m[1]);
+        const itemName = m[2].trim();
+        const mi       = menuMap[itemName.toLowerCase()];
+        parsedItems.push({
+          qty,
+          item_name:    itemName,
+          menu_item_id: mi ? mi.id : null,
+          unit_price:   mi ? parseFloat(mi.selling_price) : 0,
+          gst_percent:  mi ? parseFloat(mi.gst_percent)||0 : 0,
+          matched:      !!mi,
+        });
+        if (!mi) hasUnmatched = true;
+      }
+
+      // Parse order date from Zomato format: "02:19 PM, February 07 2026"
+      let orderDate;
+      try {
+        orderDate = new Date(row.order_placed_at.replace(/(\d{2}:\d{2} [AP]M), (.+)/, '$2 $1'));
+        if (isNaN(orderDate.getTime())) orderDate = new Date();
+      } catch { orderDate = new Date(); }
+      const dt = orderDate.toISOString().slice(0, 19).replace('T', ' ');
+
+      const order_number = 'ZOM-' + row.zomato_order_id.slice(-8);
+
+      // Calculate totals from matched items
+      let subtotal = 0, totalGst = 0;
+      for (const item of parsedItems) {
+        const lineBase = item.unit_price * item.qty;
+        const lineGst  = lineBase * item.gst_percent / 100;
+        subtotal  += lineBase;
+        totalGst  += lineGst;
+      }
+
+      // Use Zomato's actual received amount (after platform discounts)
+      const zomatoTotal    = parseFloat(row.total_received) || (subtotal + totalGst);
+      const zomatoSubtotal = parseFloat(row.bill_subtotal)  || subtotal;
+      const discountAmt    = Math.max(0, (zomatoSubtotal + totalGst) - zomatoTotal);
+
+      // Create order
+      const [oRes] = await conn.query(
+        `INSERT INTO orders
+           (order_number, order_type, status, payment_status, payment_method,
+            source, zomato_order_id, subtotal, gst_amount,
+            discount_type, discount_amount, total_amount,
+            billed_by, billed_at, paid_at, created_by, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [order_number, 'parcel', 'paid', 'paid', 'upi',
+         'zomato', row.zomato_order_id, zomatoSubtotal, totalGst,
+         discountAmt > 0 ? 'amount' : null, discountAmt, zomatoTotal,
+         req.user.id, dt, dt, req.user.id, dt]
+      );
+      const orderId = oRes.insertId;
+
+      // Insert order items
+      for (const item of parsedItems) {
+        const lineBase  = item.unit_price * item.qty;
+        const lineGst   = lineBase * item.gst_percent / 100;
+        const lineTotal = lineBase + lineGst;
+        await conn.query(
+          `INSERT INTO order_items
+             (order_id, menu_item_id, item_name, quantity, unit_price,
+              gst_percent, gst_amount, total_price)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [orderId, item.menu_item_id || null, item.item_name, item.qty,
+           item.unit_price, item.gst_percent, lineGst, lineTotal]
+        );
+      }
+
+      // Deduct inventory (best-effort — only matched items have recipe_id)
+      try { await deductInventoryForOrder(conn, orderId, req.user.id); }
+      catch (e) { console.warn('[ZomatoImport] Inventory deduct warn:', e.message); }
+
+      imported.push({
+        id: orderId,
+        order_number,
+        zomato_order_id: row.zomato_order_id,
+        total: zomatoTotal,
+        items: parsedItems,
+        has_unmatched: hasUnmatched,
+        order_date: dt,
+      });
+    }
+
+    await conn.commit();
+    wsHub.broadcast('dashboard', { type: 'stats_update' });
+    res.json({ success: true, data: { imported, skipped, total: imported.length } });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ success: false, message: err.message });
+  } finally { conn.release(); }
+});
+
+// ── ZOMATO ORDER ITEM UPDATE (fix unmatched items post-import) ───────────────
+// PATCH /api/orders/zomato-item/:orderItemId
+router.patch('/zomato-item/:orderItemId', authorize('admin','manager'), async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { menu_item_id } = req.body;
+
+    const [[oi]] = await conn.query(
+      'SELECT oi.*, o.id AS order_id, o.source FROM order_items oi JOIN orders o ON oi.order_id=o.id WHERE oi.id=?',
+      [req.params.orderItemId]
+    );
+    if (!oi) return res.status(404).json({ success: false, message: 'Item not found.' });
+    if (oi.source !== 'zomato') return res.status(400).json({ success: false, message: 'Only Zomato order items can be updated this way.' });
+
+    const [[mi]] = await conn.query('SELECT * FROM menu_items WHERE id=?', [menu_item_id]);
+    if (!mi) return res.status(404).json({ success: false, message: 'Menu item not found.' });
+
+    // Update order item with correct menu item
+    const lineBase  = parseFloat(mi.selling_price) * parseFloat(oi.quantity);
+    const gstPct    = parseFloat(mi.gst_percent) || 0;
+    const lineGst   = lineBase * gstPct / 100;
+    const lineTotal = lineBase + lineGst;
+
+    await conn.query(
+      `UPDATE order_items SET menu_item_id=?, item_name=?, unit_price=?, gst_percent=?, gst_amount=?, total_price=? WHERE id=?`,
+      [mi.id, mi.name, mi.selling_price, gstPct, lineGst, lineTotal, req.params.orderItemId]
+    );
+
+    // Re-deduct inventory for this order (reverse old, apply new)
+    // Remove old movements for this order item's previous menu item
+    const [[prevMov]] = await conn.query(
+      "SELECT COUNT(*) AS cnt FROM inventory_movements WHERE reference_type='order' AND reference_id=?",
+      [oi.order_id]
+    );
+
+    if (prevMov.cnt > 0) {
+      // Reverse all movements for this order and re-deduct everything
+      const [movements] = await conn.query(
+        "SELECT * FROM inventory_movements WHERE reference_type='order' AND reference_id=? AND movement_type='sale_deduction'",
+        [oi.order_id]
+      );
+      for (const mv of movements) {
+        const deducted = Math.abs(parseFloat(mv.quantity_change));
+        await conn.query('UPDATE inventory_items SET current_quantity=current_quantity+? WHERE id=?',
+          [deducted, mv.inventory_item_id]);
+      }
+      await conn.query(
+        "DELETE FROM inventory_movements WHERE reference_type='order' AND reference_id=? AND movement_type='sale_deduction'",
+        [oi.order_id]
+      );
+    }
+    // Re-deduct with corrected items
+    try { await deductInventoryForOrder(conn, oi.order_id, req.user.id); }
+    catch (e) { console.warn('[ZomatoItemUpdate] Inventory warn:', e.message); }
+
+    await conn.commit();
+    res.json({ success: true, message: 'Item updated and inventory re-adjusted.' });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({ success: false, message: err.message });
+  } finally { conn.release(); }
+});
+
 module.exports = router;
-// ── GET all KOT tickets ──────────────────────────────────
-// (inserted before module.exports line - will add as separate route file)
 
 // ── DELETE order (admin/manager only) ────────────────────
 router.delete('/:id', authorize('admin','manager'), async (req, res) => {

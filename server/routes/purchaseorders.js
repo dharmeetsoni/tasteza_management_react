@@ -163,40 +163,57 @@ router.post('/:id/receive', async (req, res) => {
 
       if (newReceived < parseFloat(poi.ordered_qty)) allReceived = false;
 
+      // Use actual price from receive form if provided, else keep original PO price
+      const actualPrice = (ri.new_unit_price !== undefined && ri.new_unit_price !== '' && !isNaN(parseFloat(ri.new_unit_price)))
+        ? parseFloat(ri.new_unit_price)
+        : parseFloat(poi.unit_price);
+
+      // Update PO item: received qty, actual price paid, recalculated total
       await conn.query(
-        'UPDATE purchase_order_items SET received_qty = ? WHERE id = ?',
-        [newReceived, poi.id]
+        'UPDATE purchase_order_items SET received_qty = ?, unit_price = ?, total_price = ? WHERE id = ?',
+        [newReceived, actualPrice, parseFloat(poi.ordered_qty) * actualPrice, poi.id]
       );
 
-      // Add to inventory stock
+      // Update inventory: add stock qty + update purchase_price to actual price paid
       await conn.query(
         'UPDATE inventory_items SET current_quantity = current_quantity + ?, purchase_price = ? WHERE id = ?',
-        [receivedQty, poi.unit_price, poi.inventory_item_id]
+        [receivedQty, actualPrice, poi.inventory_item_id]
       );
 
-      // Log purchase record
-      await conn.query(
-        `INSERT INTO inventory_purchases
-           (inventory_item_id, quantity, price_per_unit, total_amount, purchase_date,
-            supplier, invoice_no, notes, purchased_by)
-         VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?)`,
-        [poi.inventory_item_id, receivedQty, poi.unit_price,
-         receivedQty * poi.unit_price, po.supplier || null,
-         invoice_no || po.invoice_no || null,
+      // Log purchase record (best-effort — won't rollback inventory update if table missing)
+      try {
+        await conn.query(
+          `INSERT INTO inventory_purchases
+             (inventory_item_id, quantity, price_per_unit, total_amount, purchase_date,
+              supplier, invoice_no, notes, purchased_by)
+           VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?)`,
+          [poi.inventory_item_id, receivedQty, actualPrice,
+           receivedQty * actualPrice, po.supplier || null,
+           invoice_no || po.invoice_no || null,
          `PO: ${po.po_number}` + (notes ? ` — ${notes}` : ''),
          req.user.id]
-      );
+        );
+      } catch (e) { console.warn('[PO Receive] purchase log skipped:', e.message); }
     }
 
     const newStatus = allReceived ? 'received' : 'partial';
+
+    // Recalculate PO total_amount from all items (prices may have changed on receive)
+    const [allItems] = await conn.query(
+      'SELECT unit_price, ordered_qty FROM purchase_order_items WHERE order_id = ?',
+      [req.params.id]
+    );
+    const newTotal = allItems.reduce((s, i) => s + parseFloat(i.ordered_qty) * parseFloat(i.unit_price), 0);
+
     await conn.query(
       `UPDATE purchase_orders
        SET status=?, received_at=NOW(), received_by=?,
+           total_amount=?,
            invoice_no=COALESCE(?,invoice_no),
            bill_amount=COALESCE(?,bill_amount),
            receive_notes=?
        WHERE id=?`,
-      [newStatus, req.user.id, invoice_no || null, bill_amount || null, notes || null, req.params.id]
+      [newStatus, req.user.id, newTotal, invoice_no || null, bill_amount || null, notes || null, req.params.id]
     );
 
     await conn.commit();
