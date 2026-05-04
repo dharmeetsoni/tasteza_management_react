@@ -6,6 +6,8 @@ import OrderMenu from "./OrderMenu";
 import Checkout from "./Checkout";
 import CustomerLogin from "./CustomerLogin";
 import OrderConfirmation from "./OrderConfirmation";
+import CustomerAccount from "./CustomerAccount";
+import PaymentCallback from "./PaymentCallback";
 
 const PublicOrderApp = () => (
   <CustomerAuthProvider>
@@ -15,7 +17,9 @@ const PublicOrderApp = () => (
         <Route path="checkout" element={<Checkout />} />
         <Route path="login" element={<CustomerLogin />} />
         <Route path="confirmation/:orderId" element={<OrderConfirmation />} />
-        <Route path="*" element={<Navigate to="/order" replace />} />
+        <Route path="account" element={<CustomerAccount />} />
+        <Route path="payment-callback" element={<PaymentCallback />} />
+        <Route path="*" element={<Navigate to="/menu/" replace />} />
       </Routes>
     </CartProvider>
   </CustomerAuthProvider>

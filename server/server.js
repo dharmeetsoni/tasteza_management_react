@@ -24,6 +24,75 @@ app.use(morgan('dev'));
 
 const db = require('./config/db');
 
+// Adds missing integration columns one-by-one, ignoring "already exists" errors.
+// Handles MySQL 5.7 which doesn't support ALTER TABLE ADD COLUMN IF NOT EXISTS.
+async function ensureIntegrationColumns() {
+  const cols = [
+    ['firebase_api_key', 'VARCHAR(255) DEFAULT NULL'],
+    ['firebase_auth_domain', 'VARCHAR(255) DEFAULT NULL'],
+    ['firebase_project_id', 'VARCHAR(255) DEFAULT NULL'],
+    ['firebase_app_id', 'VARCHAR(255) DEFAULT NULL'],
+    ['phonepay_merchant_id', 'VARCHAR(100) DEFAULT NULL'],
+    ['phonepay_salt_key', 'VARCHAR(100) DEFAULT NULL'],
+    ['phonepay_salt_index', "VARCHAR(10)  DEFAULT '1'"],
+    ['phonepay_env', "VARCHAR(20)  DEFAULT 'sandbox'"],
+    // V2 credentials
+    ['phonepay_client_id', 'VARCHAR(255) DEFAULT NULL'],
+    ['phonepay_client_secret', 'VARCHAR(255) DEFAULT NULL'],
+    ['phonepay_client_version', "VARCHAR(10) DEFAULT '1'"],
+    ['google_maps_key', 'VARCHAR(255) DEFAULT NULL'],
+    ['delivery_charge', 'DECIMAL(10,2) DEFAULT 30.00'],
+    ['delivery_free_above', 'DECIMAL(10,2) DEFAULT 199.00'],
+    ['auto_accept_seconds', 'INT DEFAULT 0'],
+    ['online_ordering_enabled', 'TINYINT(1) DEFAULT 1'],
+  ];
+  for (const [col, def] of cols) {
+    try {
+      await db.query(`ALTER TABLE restaurant_settings ADD COLUMN ${col} ${def}`);
+      console.log(`  ✅ Added column: ${col}`);
+    } catch (e) {
+      if (e.code === 'ER_DUP_FIELDNAME') {
+        // Column already exists — expected on subsequent starts
+      } else {
+        console.error(`  ⚠️  Could not add column ${col}:`, e.message);
+      }
+    }
+  }
+}
+
+async function ensureOnlineOrdersColumns() {
+  const orderCols = [
+    ['gst_amount', 'DECIMAL(10,2) DEFAULT 0.00'],
+    ['payment_method', "VARCHAR(30) DEFAULT 'cod'"],
+    ['payment_status', "VARCHAR(20) DEFAULT 'pending'"],
+    ['payment_ref', 'VARCHAR(100) DEFAULT NULL'],
+    ['phonepay_txn_id', 'VARCHAR(100) DEFAULT NULL'],
+    ['estimated_minutes', 'INT DEFAULT NULL'],
+    ['linked_order_id', 'INT DEFAULT NULL'],
+    ['coupon_code', 'VARCHAR(50) DEFAULT NULL'],
+    ['discount_amount', 'DECIMAL(10,2) DEFAULT 0.00'],
+  ];
+  for (const [col, def] of orderCols) {
+    try {
+      await db.query(`ALTER TABLE online_orders ADD COLUMN ${col} ${def}`);
+      console.log(`  ✅ Added column: online_orders.${col}`);
+    } catch (e) {
+      if (e.code !== 'ER_DUP_FIELDNAME' && e.code !== 'ER_NO_SUCH_TABLE') {
+        console.error(`  ⚠️  Could not add online_orders.${col}:`, e.message);
+      }
+    }
+  }
+  // online_order_items
+  try {
+    await db.query(`ALTER TABLE online_order_items ADD COLUMN addon_data TEXT DEFAULT NULL`);
+    console.log(`  ✅ Added column: online_order_items.addon_data`);
+  } catch (e) {
+    if (e.code !== 'ER_DUP_FIELDNAME' && e.code !== 'ER_NO_SUCH_TABLE') {
+      console.error(`  ⚠️  Could not add online_order_items.addon_data:`, e.message);
+    }
+  }
+}
+
 async function startServer() {
   // ── 1. DB connectivity check ───────────────────────────
   try {
@@ -37,6 +106,12 @@ async function startServer() {
 
   // ── 2. Run pending migrations ──────────────────────────
   await runMigrations();
+
+  // ── 2b. Ensure integration columns exist (resilient, per-column) ──
+  await ensureIntegrationColumns();
+
+  // ── 2c. Ensure online_orders columns exist ─────────────
+  await ensureOnlineOrdersColumns();
 
   // ── 3. WebSocket ───────────────────────────────────────
   wsHub.init(server);
@@ -68,6 +143,9 @@ async function startServer() {
   app.use('/api/salary-mgmt', require('./routes/salary_mgmt'));
   app.use('/api/expenses', require('./routes/expenses'));
   app.use('/api/quotations', require('./routes/quotations'));
+  app.use('/api/customers', require('./routes/customers'));
+  app.use('/api/addons', require('./routes/addons'));
+  app.use('/api/phonepay', require('./routes/phonepay'));
 
   app.get('/api', (req, res) => res.json({ status: 'OK', message: '🍽️ Tasteza API' }));
 

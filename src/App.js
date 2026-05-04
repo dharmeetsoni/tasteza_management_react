@@ -90,7 +90,7 @@ export default function App() {
           <SWRegistrar />
           <Routes>
             {/* Public ordering — no auth required */}
-            <Route path="/order/*" element={<PublicOrderApp />} />
+            <Route path="/menu/*" element={<PublicOrderApp />} />
 
             {/* Admin app — wrapped in auth/ws providers */}
             <Route

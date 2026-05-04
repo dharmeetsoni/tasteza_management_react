@@ -6,8 +6,9 @@ const db = require('../config/db');
 router.post('/', async (req, res) => {
   const {
     items, order_type, table_number, delivery_address,
-    notes, subtotal, delivery_charge, total,
-    customer_name, customer_phone, customer_id,
+    notes, subtotal, delivery_charge, gst_amount, total,
+    customer_name, customer_phone, customer_id, payment_method,
+    coupon_code, discount_amount,
   } = req.body;
 
   if (!items || !items.length) {
@@ -22,13 +23,17 @@ router.post('/', async (req, res) => {
     const [orderResult] = await conn.query(
       `INSERT INTO online_orders
         (order_type, table_number, delivery_address, notes,
-         subtotal, delivery_charge, total,
-         customer_name, customer_phone, customer_id, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())`,
+         subtotal, delivery_charge, gst_amount, discount_amount, total,
+         customer_name, customer_phone, customer_id,
+         payment_method, payment_status, coupon_code, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 'pending', NOW())`,
       [
         order_type, table_number || null, delivery_address || null,
-        notes || null, subtotal, delivery_charge || 0, total,
+        notes || null, subtotal, delivery_charge || 0,
+        gst_amount || 0, discount_amount || 0, total,
         customer_name || 'Guest', customer_phone || null, customer_id || null,
+        payment_method || 'phonepay',
+        coupon_code || null,
       ]
     );
 
@@ -46,10 +51,9 @@ router.post('/', async (req, res) => {
 
     await conn.commit();
 
-    // Broadcast to admin dashboard via WebSocket if available
     try {
       const wsHub = req.app.get('wsHub');
-      if (wsHub) wsHub.broadcast({ type: 'NEW_ONLINE_ORDER', orderId, order_type, total });
+      if (wsHub) wsHub.broadcast('sales', { type: 'new_online_order', data: { id: orderId, order_type, total } });
     } catch { }
 
     res.json({ success: true, order_id: orderId, message: 'Order placed successfully' });
@@ -98,20 +102,46 @@ CREATE TABLE IF NOT EXISTS online_order_items (
   }
 });
 
-// GET /api/online-orders/:id — fetch order details
+// GET /api/online-orders — admin list (authenticated)
+const { authenticate } = require('../middleware/auth');
+
+router.get('/', authenticate, async (req, res) => {
+  try {
+    const [orders] = await db.query(
+      `SELECT * FROM online_orders ORDER BY created_at DESC LIMIT 200`
+    );
+    res.json({ success: true, data: orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/online-orders/:id — fetch order details (public — customer tracking)
 router.get('/:id', async (req, res) => {
   try {
-    const [[order]] = await db.query(
-      'SELECT * FROM online_orders WHERE id = ?',
-      [req.params.id]
-    );
+    const [[order]] = await db.query('SELECT * FROM online_orders WHERE id = ?', [req.params.id]);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const [items] = await db.query('SELECT * FROM online_order_items WHERE order_id = ?', [req.params.id]);
+    res.json({ success: true, data: { ...order, items } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
-    const [items] = await db.query(
-      'SELECT * FROM online_order_items WHERE order_id = ?',
-      [req.params.id]
+// PATCH /api/online-orders/:id/status — admin update status
+router.patch('/:id/status', authenticate, async (req, res) => {
+  const { status, estimated_minutes } = req.body;
+  try {
+    await db.query(
+      'UPDATE online_orders SET status = ?, estimated_minutes = COALESCE(?, estimated_minutes) WHERE id = ?',
+      [status, estimated_minutes || null, req.params.id]
     );
-    res.json({ ...order, items });
+    // Broadcast to customer (online_orders room) and dashboard
+    const wsHub = req.app.get('wsHub');
+    if (wsHub) {
+      wsHub.broadcast('sales', { type: 'online_order_status', data: { id: req.params.id, status, estimated_minutes } });
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

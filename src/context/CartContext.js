@@ -8,27 +8,29 @@ const initialState = {
 function cartReducer(state, action) {
   switch (action.type) {
     case 'ADD_ITEM': {
-      const existing = state.items.find((i) => i.id === action.payload.id);
+      // Each item has a unique cartKey = id + addon snapshot
+      const key = action.payload.cartKey || String(action.payload.id);
+      const existing = state.items.find((i) => i.cartKey === key);
       if (existing) {
         return {
           ...state,
           items: state.items.map((i) =>
-            i.id === action.payload.id
-              ? { ...i, quantity: i.quantity + action.payload.quantity }
-              : i
+            i.cartKey === key ? { ...i, quantity: i.quantity + action.payload.quantity } : i
           ),
         };
       }
-      return { ...state, items: [...state.items, action.payload] };
+      return { ...state, items: [...state.items, { ...action.payload, cartKey: key }] };
     }
     case 'REMOVE_ITEM':
-      return { ...state, items: state.items.filter((i) => i.id !== action.payload) };
+      return { ...state, items: state.items.filter((i) => i.cartKey !== action.payload && i.id !== action.payload) };
     case 'UPDATE_QUANTITY':
       return {
         ...state,
         items: state.items
           .map((i) =>
-            i.id === action.payload.id ? { ...i, quantity: action.payload.quantity } : i
+            (i.cartKey === action.payload.id || i.id === action.payload.id)
+              ? { ...i, quantity: action.payload.quantity }
+              : i
           )
           .filter((i) => i.quantity > 0),
       };
@@ -64,13 +66,27 @@ export const CartProvider = ({ children }) => {
   }, [state]);
 
   const subtotal = state.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  const deliveryFreeAbove = Number(process.env.REACT_APP_DELIVERY_FREE_ABOVE || 199);
-  const deliveryChargeAmt = Number(process.env.REACT_APP_DELIVERY_CHARGE || 30);
+  const gstTotal = state.items.reduce((sum, i) => {
+    const gst = Number(i.gst_percent || 0);
+    return sum + (i.price * i.quantity * gst) / 100;
+  }, 0);
+  const [settings, setSettings] = React.useState(null);
+
+  // Load delivery config from public settings once
+  React.useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.json())
+      .then(d => { if (d.success) setSettings(d.data); })
+      .catch(() => { });
+  }, []);
+
+  const deliveryFreeAbove = Number(settings?.delivery_free_above ?? process.env.REACT_APP_DELIVERY_FREE_ABOVE ?? 199);
+  const deliveryChargeAmt = Number(settings?.delivery_charge ?? process.env.REACT_APP_DELIVERY_CHARGE ?? 30);
   const deliveryCharge =
     state.orderType === 'delivery'
       ? subtotal >= deliveryFreeAbove ? 0 : deliveryChargeAmt
       : 0;
-  const grandTotal = subtotal + deliveryCharge;
+  const grandTotal = subtotal + gstTotal + deliveryCharge;
   const totalItems = state.items.reduce((sum, i) => sum + i.quantity, 0);
 
   return (
@@ -86,6 +102,7 @@ export const CartProvider = ({ children }) => {
         clearCart: () => dispatch({ type: 'CLEAR_CART' }),
         totalItems,
         subtotal,
+        gstTotal,
         deliveryCharge,
         grandTotal,
       }}

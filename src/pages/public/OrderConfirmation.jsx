@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import axios from "axios";
+import { getOnlineOrder } from "../../api";
 
-const STATUS_MAP = {
-  pending: { label: "Pending ⏳", color: "#f59e0b", bg: "#fef3c7" },
-  confirmed: { label: "Confirmed ✓", color: "#16a34a", bg: "#dcfce7" },
-  preparing: { label: "Preparing 🍳", color: "#f97316", bg: "#fff7ed" },
-  ready: { label: "Ready! 🎉", color: "#7c3aed", bg: "#f5f3ff" },
-  delivered: { label: "Delivered ✓", color: "#16a34a", bg: "#dcfce7" },
+const STEPS = [
+  { key: "pending", label: "Order Placed", icon: "📋" },
+  { key: "confirmed", label: "Confirmed", icon: "✅" },
+  { key: "preparing", label: "Preparing", icon: "🍳" },
+  { key: "ready", label: "Ready", icon: "🔔" },
+  { key: "delivered", label: "Done", icon: "🏁" },
+];
+
+const stepIndex = (status) => {
+  const idx = STEPS.findIndex((s) => s.key === status);
+  return idx >= 0 ? idx : 0;
 };
 
 const OrderConfirmation = () => {
@@ -15,67 +20,117 @@ const OrderConfirmation = () => {
   const navigate = useNavigate();
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
+  const wsRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const fetchOrder = async () => {
+    try {
+      const d = await getOnlineOrder(orderId);
+      if (d.success) setOrder(d.data);
+    } catch {}
+  };
 
   useEffect(() => {
     if (!orderId || orderId === "NEW") {
       setLoading(false);
       return;
     }
-    axios
-      .get(`/api/online-orders/${orderId}`)
-      .then((res) => setOrder(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    fetchOrder().finally(() => setLoading(false));
   }, [orderId]);
 
-  const status = STATUS_MAP[order?.status] || STATUS_MAP.pending;
+  // WebSocket live tracking
+  useEffect(() => {
+    if (!orderId || orderId === "NEW") return;
+    const try_ws = () => {
+      try {
+        const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws`);
+        wsRef.current = ws;
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.type === "order_status_updated" && String(msg.data?.id) === String(orderId)) {
+              setOrder((prev) => ({ ...prev, status: msg.data.status }));
+            }
+          } catch {}
+        };
+        ws.onclose = () => {
+          // Fall back to polling
+          pollRef.current = setInterval(fetchOrder, 15000);
+        };
+      } catch {
+        pollRef.current = setInterval(fetchOrder, 15000);
+      }
+    };
+    try_ws();
+    return () => {
+      wsRef.current?.close();
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [orderId]);
+
+  const curStep = order ? stepIndex(order.status) : 0;
+  const isDelivery = order?.order_type === "delivery";
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        <div style={{ fontSize: 64 }}>🎉</div>
-        <h1 style={styles.title}>Order Placed!</h1>
-        <p style={{ color: "#6b7280", margin: "0 0 20px" }}>Thank you for your order</p>
+    <div style={st.page}>
+      <div style={st.card}>
+        <div style={{ fontSize: 60, marginBottom: 8 }}>🎉</div>
+        <h1 style={st.title}>Order Placed!</h1>
+        {orderId && orderId !== "NEW" && <p style={st.orderId}>Order #{orderId}</p>}
+        <p style={{ color: "#9ca3af", margin: "0 0 24px", fontSize: 13 }}>Thank you for your order</p>
 
-        {orderId && orderId !== "NEW" && (
-          <div style={styles.idBox}>
-            <span style={{ color: "#6b7280", fontSize: 13 }}>Order ID</span>
-            <span style={{ fontWeight: 800, fontSize: 18, color: "#f97316" }}>#{orderId}</span>
+        {/* Status tracker */}
+        <div style={st.tracker}>
+          {STEPS.filter((s, i) => i <= (isDelivery ? STEPS.length - 1 : STEPS.length - 2)).map((step, i) => {
+            const done = i <= curStep;
+            const active = i === curStep;
+            return (
+              <div key={step.key} style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: 1 }}>
+                <div style={{ ...st.dot, ...(active ? st.dotActive : done ? st.dotDone : {}) }}>{done || active ? step.icon : ""}</div>
+                <span style={{ ...st.dotLabel, fontWeight: active ? 800 : 500, color: active ? "#e23744" : done ? "#16a34a" : "#9ca3af" }}>
+                  {step.label}
+                </span>
+                {i < STEPS.length - 2 && <div style={{ ...st.connector, background: done ? "#16a34a" : "#e5e7eb" }} />}
+              </div>
+            );
+          })}
+        </div>
+
+        {order && (
+          <div style={st.details}>
+            <div style={st.detailRow}>
+              <span>Type</span>
+              <span style={{ textTransform: "capitalize" }}>{(order.order_type || "").replace("_", " ")}</span>
+            </div>
+            {order.table_number && (
+              <div style={st.detailRow}>
+                <span>Table</span>
+                <span>{order.table_number}</span>
+              </div>
+            )}
+            {order.customer_name && (
+              <div style={st.detailRow}>
+                <span>Name</span>
+                <span>{order.customer_name}</span>
+              </div>
+            )}
+            <div style={st.detailRow}>
+              <span>Total</span>
+              <span style={{ fontWeight: 800, color: "#e23744" }}>&#8377;{Number(order.total).toFixed(2)}</span>
+            </div>
           </div>
         )}
 
-        {order && (
-          <>
-            <div style={{ ...styles.statusBadge, background: status.bg, color: status.color }}>{status.label}</div>
-            <div style={styles.details}>
-              <div style={styles.detailRow}>
-                <span>Type</span>
-                <span style={{ textTransform: "capitalize" }}>{(order.order_type || "").replace("_", " ")}</span>
-              </div>
-              {order.table_number && (
-                <div style={styles.detailRow}>
-                  <span>Table</span>
-                  <span>{order.table_number}</span>
-                </div>
-              )}
-              <div style={styles.detailRow}>
-                <span>Total</span>
-                <span style={{ fontWeight: 700, color: "#f97316" }}>₹{Number(order.total).toFixed(2)}</span>
-              </div>
-            </div>
-          </>
-        )}
+        {loading && <p style={{ color: "#9ca3af", fontSize: 13 }}>Loading details&hellip;</p>}
 
-        {loading && <p style={{ color: "#6b7280", fontSize: 14 }}>Loading details…</p>}
+        <div style={st.infoBox}>&#128241; We&rsquo;ll update the status above in real time!</div>
 
-        <div style={styles.info}>📱 Your order is being prepared. We'll notify you when it's ready!</div>
-
-        <div style={{ display: "flex", gap: 10 }}>
-          <button style={styles.primaryBtn} onClick={() => navigate("/order")}>
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <button style={st.primaryBtn} onClick={() => navigate("/order")}>
             Order More
           </button>
-          <button style={styles.secondaryBtn} onClick={() => window.print()}>
-            🖨️ Print
+          <button style={st.secondaryBtn} onClick={() => window.print()}>
+            &#128438; Print
           </button>
         </div>
       </div>
@@ -83,7 +138,7 @@ const OrderConfirmation = () => {
   );
 };
 
-const styles = {
+const st = {
   page: {
     minHeight: "100vh",
     background: "linear-gradient(135deg,#fff7ed,#fef9f0)",
@@ -95,54 +150,71 @@ const styles = {
   card: {
     background: "#fff",
     borderRadius: 20,
-    padding: "32px 28px",
+    padding: "32px 24px",
     width: "100%",
     maxWidth: 420,
     boxShadow: "0 8px 40px rgba(0,0,0,0.12)",
     textAlign: "center",
   },
-  title: { margin: "8px 0 4px", fontSize: 28, fontWeight: 800, color: "#111827" },
-  idBox: {
-    background: "#f9fafb",
-    borderRadius: 10,
-    padding: "12px 16px",
-    marginBottom: 16,
+  title: { margin: "8px 0 2px", fontSize: 26, fontWeight: 900, color: "#1c1c1c" },
+  orderId: { margin: "0 0 8px", fontWeight: 800, fontSize: 20, color: "#e23744" },
+  tracker: {
     display: "flex",
+    alignItems: "flex-start",
     justifyContent: "space-between",
-    alignItems: "center",
+    marginBottom: 20,
+    paddingBottom: 4,
+    position: "relative",
   },
-  statusBadge: { display: "inline-block", borderRadius: 20, padding: "6px 20px", fontWeight: 700, fontSize: 15, marginBottom: 20 },
+  dot: {
+    width: 38,
+    height: 38,
+    borderRadius: "50%",
+    background: "#f4f4f5",
+    border: "2px solid #e5e7eb",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 18,
+    marginBottom: 4,
+    zIndex: 1,
+  },
+  dotActive: { background: "#fff5f5", border: "2px solid #e23744", boxShadow: "0 0 0 4px rgba(226,55,68,0.15)" },
+  dotDone: { background: "#f0fdf4", border: "2px solid #16a34a" },
+  dotLabel: { fontSize: 10, marginTop: 2 },
+  connector: { height: 2, width: "60%", marginTop: -22, marginLeft: "50%", position: "relative" },
   details: { background: "#f9fafb", borderRadius: 10, padding: "12px 16px", marginBottom: 16, textAlign: "left" },
   detailRow: { display: "flex", justifyContent: "space-between", fontSize: 14, color: "#374151", padding: "4px 0" },
-  info: {
+  infoBox: {
     background: "#fffbeb",
     border: "1px solid #fde68a",
     borderRadius: 10,
-    padding: "12px 16px",
-    marginBottom: 20,
-    fontSize: 14,
+    padding: "10px 14px",
+    fontSize: 13,
     color: "#92400e",
+    marginBottom: 16,
   },
   primaryBtn: {
     flex: 1,
-    padding: 12,
-    background: "#f97316",
+    padding: "11px 0",
+    background: "#e23744",
     color: "#fff",
     border: "none",
     borderRadius: 10,
     fontWeight: 700,
-    fontSize: 15,
     cursor: "pointer",
+    fontSize: 14,
   },
   secondaryBtn: {
-    padding: "12px 16px",
-    background: "#f3f4f6",
+    flex: 1,
+    padding: "11px 0",
+    background: "#f9fafb",
     color: "#374151",
-    border: "none",
+    border: "1.5px solid #e5e7eb",
     borderRadius: 10,
     fontWeight: 600,
-    fontSize: 14,
     cursor: "pointer",
+    fontSize: 14,
   },
 };
 

@@ -4,12 +4,161 @@ import { useCart } from "../../context/CartContext";
 import OrderTypeBanner from "../../components/order/OrderTypeBanner";
 import CartDrawer from "../../components/order/CartDrawer";
 
-const SPICE_ICONS = ["", "🌶", "🌶🌶", "🌶🌶🌶"];
+// ── Addon selection bottom sheet ──────────────────────────
+const AddonModal = ({ item, addonGroups, onConfirm, onCancel }) => {
+  const [selections, setSelections] = React.useState({});
 
-// ── Inline quantity stepper used on each card ──────────────
+  const toggle = (group, addonItem) => {
+    setSelections((prev) => {
+      const cur = prev[group.id] || [];
+      const exists = cur.find((i) => i.id === addonItem.id);
+      if (exists) return { ...prev, [group.id]: cur.filter((i) => i.id !== addonItem.id) };
+      if (group.max_select === 1) return { ...prev, [group.id]: [addonItem] };
+      if (cur.length >= group.max_select) return prev;
+      return { ...prev, [group.id]: [...cur, addonItem] };
+    });
+  };
+
+  const canConfirm = addonGroups.every((g) => {
+    if (!g.is_required) return true;
+    return (selections[g.id] || []).length >= (g.min_select || 1);
+  });
+
+  const addonTotal = Object.values(selections)
+    .flat()
+    .reduce((s, a) => s + Number(a.price), 0);
+  const totalPrice = Number(item.price) + addonTotal;
+
+  return (
+    <div style={am.overlay}>
+      <div style={am.sheet}>
+        <div style={am.header}>
+          <div style={{ flex: 1 }}>
+            <p style={am.itemName}>{item.name}</p>
+            <p style={am.itemPrice}>&#8377;{Number(item.price).toFixed(0)}</p>
+          </div>
+          <button style={am.closeBtn} onClick={onCancel}>
+            &#10005;
+          </button>
+        </div>
+        <div style={am.body}>
+          {addonGroups.map((group) => (
+            <div key={group.id} style={{ marginBottom: 20 }}>
+              <div style={am.groupTitle}>
+                {group.name}
+                {group.is_required ? <span style={am.reqBadge}>Required</span> : <span style={am.optBadge}>Optional</span>}
+              </div>
+              <p style={am.groupHint}>{group.max_select === 1 ? "Choose 1" : `Choose up to ${group.max_select}`}</p>
+              {(group.items || []).map((ai) => {
+                const selected = (selections[group.id] || []).find((i) => i.id === ai.id);
+                return (
+                  <div key={ai.id} style={{ ...am.addonItem, ...(selected ? am.addonSelected : {}) }} onClick={() => toggle(group, ai)}>
+                    <div style={{ ...am.addonCheck, ...(selected ? am.addonCheckSel : {}) }}>
+                      {selected && <span style={{ fontSize: 12 }}>&#10003;</span>}
+                    </div>
+                    <span style={am.addonName}>{ai.name}</span>
+                    {Number(ai.price) > 0 && <span style={am.addonPrice}>+&#8377;{Number(ai.price).toFixed(0)}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <div style={am.footer}>
+          <button
+            style={{ ...am.confirmBtn, opacity: canConfirm ? 1 : 0.55 }}
+            disabled={!canConfirm}
+            onClick={() => onConfirm(item, selections)}
+          >
+            Add to Cart &middot; &#8377;{totalPrice.toFixed(0)}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const am = {
+  overlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    zIndex: 1000,
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  sheet: {
+    background: "#fff",
+    borderRadius: "20px 20px 0 0",
+    width: "100%",
+    maxWidth: 540,
+    maxHeight: "85vh",
+    display: "flex",
+    flexDirection: "column",
+  },
+  header: { padding: "16px 16px 12px", borderBottom: "1px solid #ebebeb", display: "flex", alignItems: "flex-start", gap: 12 },
+  itemName: { margin: 0, fontWeight: 800, fontSize: 16, color: "#1c1c1c" },
+  itemPrice: { margin: "4px 0 0", fontSize: 14, color: "#e23744", fontWeight: 700 },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: "50%",
+    border: "1.5px solid #e5e7eb",
+    background: "#f9fafb",
+    cursor: "pointer",
+    fontSize: 14,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  body: { overflowY: "auto", flex: 1, padding: "16px" },
+  groupTitle: { fontSize: 14, fontWeight: 800, color: "#1c1c1c", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 },
+  reqBadge: { fontSize: 10, background: "#fef2f2", color: "#dc2626", borderRadius: 20, padding: "2px 8px", fontWeight: 700 },
+  optBadge: { fontSize: 10, background: "#f0fdf4", color: "#16a34a", borderRadius: 20, padding: "2px 8px", fontWeight: 700 },
+  addonItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1.5px solid #e5e7eb",
+    marginBottom: 8,
+    cursor: "pointer",
+    transition: "all 0.15s",
+  },
+  addonSelected: { border: "1.5px solid #e23744", background: "#fff5f5" },
+  addonCheck: {
+    width: 20,
+    height: 20,
+    borderRadius: "50%",
+    border: "2px solid #d1d5db",
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addonCheckSel: { background: "#e23744", border: "2px solid #e23744", color: "#fff" },
+  addonName: { flex: 1, fontSize: 13, fontWeight: 600, color: "#1c1c1c" },
+  addonPrice: { fontSize: 13, fontWeight: 700, color: "#e23744" },
+  footer: { padding: "12px 16px", borderTop: "1px solid #ebebeb" },
+  confirmBtn: {
+    width: "100%",
+    padding: "14px",
+    background: "#e23744",
+    color: "#fff",
+    border: "none",
+    borderRadius: 12,
+    fontSize: 15,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+};
+
+// ── Inline quantity stepper ───────────────────────────────
 const QtyControl = ({ item, cartItem, onAdd, onUpdate }) => {
   const qty = cartItem?.quantity || 0;
-
   if (qty === 0) {
     return (
       <button
@@ -24,24 +173,23 @@ const QtyControl = ({ item, cartItem, onAdd, onUpdate }) => {
       </button>
     );
   }
-
   return (
     <div style={cs.stepper}>
       <button
         style={cs.stepBtn}
         onClick={(e) => {
           e.stopPropagation();
-          onUpdate(cartItem.id, qty - 1);
+          onUpdate(cartItem.cartKey || cartItem.id, qty - 1);
         }}
       >
-        {qty === 1 ? "🗑" : "−"}
+        {qty === 1 ? "🗑️" : "−"}
       </button>
       <span style={cs.stepQty}>{qty}</span>
       <button
         style={cs.stepBtn}
         onClick={(e) => {
           e.stopPropagation();
-          onUpdate(cartItem.id, qty + 1);
+          onUpdate(cartItem.cartKey || cartItem.id, qty + 1);
         }}
       >
         +
@@ -50,13 +198,11 @@ const QtyControl = ({ item, cartItem, onAdd, onUpdate }) => {
   );
 };
 
-// ── Single menu card ───────────────────────────────────────
+// ── Single menu card ──────────────────────────────────────
 const MenuCard = React.memo(({ item, cartItem, courseColor, courseIcon, onAdd, onUpdate, isDineIn }) => {
   const inCart = (cartItem?.quantity || 0) > 0;
-
   return (
     <div style={{ ...cs.card, ...(inCart && !isDineIn ? cs.cardInCart : {}) }}>
-      {/* Image */}
       <div style={cs.imgWrap}>
         {item.image ? (
           <img src={item.image} alt={item.name} style={cs.img} loading="lazy" />
@@ -65,41 +211,46 @@ const MenuCard = React.memo(({ item, cartItem, courseColor, courseIcon, onAdd, o
             <span style={{ fontSize: 38 }}>{courseIcon || "🍴"}</span>
           </div>
         )}
-        {/* Veg badge on image corner */}
         <div style={{ ...cs.vegCorner, background: item.is_veg ? "#16a34a" : "#dc2626" }}>
           <div style={cs.vegCornerDot} />
         </div>
+        {item.addon_group_ids?.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 7,
+              right: 7,
+              background: "rgba(0,0,0,0.55)",
+              color: "#fff",
+              borderRadius: 6,
+              padding: "2px 6px",
+              fontSize: 9,
+              fontWeight: 700,
+            }}
+          >
+            CUSTOMISABLE
+          </div>
+        )}
       </div>
-
-      {/* Card body — all content + button here, no floating */}
       <div style={cs.body}>
-        {/* Name + spice */}
         <div style={cs.nameRow}>
           <p style={cs.name}>{item.name}</p>
-          {item.spice_level > 0 && <span style={cs.spice}>{SPICE_ICONS[Math.min(item.spice_level, 3)]}</span>}
+          {item.spice_level > 0 && (
+            <span style={cs.spice}>{item.spice_level >= 3 ? "🌶🌶🌶" : item.spice_level === 2 ? "🌶🌶" : "🌶"}</span>
+          )}
         </div>
-
-        {/* Description */}
         {item.description && <p style={cs.desc}>{item.description}</p>}
-
-        {/* Price row + ADD button — always at bottom */}
         <div style={cs.footer}>
-          <div>
-            <span style={cs.price}>₹{Number(item.price).toFixed(0)}</span>
-            {item.gst_percent > 0 && <span style={cs.gstNote}> +{item.gst_percent}%</span>}
-          </div>
-          {/* Hide qty control for Dine In */}
+          <span style={cs.price}>&#8377;{Number(item.price).toFixed(0)}</span>
           {!isDineIn && <QtyControl item={item} cartItem={cartItem} onAdd={onAdd} onUpdate={onUpdate} />}
         </div>
-
-        {/* In-cart indicator */}
         {inCart && !isDineIn && <div style={cs.inCartBar} />}
       </div>
     </div>
   );
 });
 
-// ── Main page ──────────────────────────────────────────────
+// ── Main page ─────────────────────────────────────────────
 const OrderMenu = () => {
   const [items, setItems] = useState([]);
   const [courses, setCourses] = useState([]);
@@ -108,22 +259,38 @@ const OrderMenu = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [cartOpen, setCartOpen] = useState(false);
+  const [addonGroups, setAddonGroups] = useState({});
+  const [addonModal, setAddonModal] = useState(null);
+  const [branding, setBranding] = useState({ name: "Tasteza", sub: "Kitchen & Cafe", logo: null, color: "#e23744" });
   const courseBarRef = useRef(null);
 
   const { addItem, updateQuantity, state, totalItems, grandTotal } = useCart();
   const isDineIn = state.orderType === "dine_in";
-
-  // Build a quick lookup: itemId → cartItem
   const cartMap = Object.fromEntries(state.items.map((i) => [i.id, i]));
 
+  // Load restaurant branding
   useEffect(() => {
-    axios
-      .get("/api/public/menu")
-      .then((res) => {
-        console.log("[OrderMenu] API response:", res.data);
-        const data = Array.isArray(res.data) ? res.data : res.data?.data || [];
-        setItems(data);
+    fetch("/api/settings/public")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && d.data) {
+          setBranding({
+            name: d.data.restaurant_name || "Tasteza",
+            sub: d.data.tagline || "Kitchen & Cafe",
+            logo: d.data.logo_base64 || null,
+            color: d.data.primary_color || "#e23744",
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
+  // Load menu + addon groups
+  useEffect(() => {
+    Promise.all([axios.get("/api/public/menu"), axios.get("/api/public/addon-groups").catch(() => ({ data: { data: [] } }))])
+      .then(([menuRes, addonRes]) => {
+        const data = Array.isArray(menuRes.data) ? menuRes.data : menuRes.data?.data || [];
+        setItems(data);
         const seen = new Set();
         const cats = [];
         data.forEach((i) => {
@@ -135,26 +302,77 @@ const OrderMenu = () => {
         });
         cats.sort((a, b) => a.sort - b.sort);
         setCourses(cats);
+
+        const groups = addonRes.data?.data || [];
+        const gmap = {};
+        groups.forEach((g) => {
+          gmap[g.id] = g;
+        });
+        setAddonGroups(gmap);
       })
-      .catch((err) => {
-        console.error("[OrderMenu] API error:", err.response?.status, err.response?.data || err.message);
-        setError(`Failed to load menu: ${err.response?.data?.message || err.message}`);
-      })
+      .catch((err) => setError(`Failed to load menu: ${err.message}`))
       .finally(() => setLoading(false));
   }, []);
 
   const handleAdd = useCallback(
     (item) => {
-      addItem({ id: String(item.id), name: item.name, price: Number(item.price), quantity: 1, image: item.image, category: item.category });
+      const groupIds = item.addon_group_ids || [];
+      const linkedGroups = groupIds.map((id) => addonGroups[id]).filter(Boolean);
+      if (linkedGroups.length > 0) {
+        setAddonModal({ item, groups: linkedGroups });
+      } else {
+        addItem({
+          id: String(item.id),
+          name: item.name,
+          price: Number(item.price),
+          gst_percent: Number(item.gst_percent || item.gst_rate || 0),
+          quantity: 1,
+          image: item.image,
+          category: item.category,
+          cartKey: String(item.id),
+        });
+      }
     },
-    [addItem]
+    [addItem, addonGroups],
+  );
+
+  const handleAddonConfirm = useCallback(
+    (item, selections) => {
+      addItem({
+        id: String(item.id),
+        name: item.name,
+        price: Number(item.price),
+        gst_percent: Number(item.gst_percent || item.gst_rate || 0),
+        quantity: 1,
+        image: item.image,
+        category: item.category,
+        cartKey: String(item.id),
+      });
+      Object.values(selections)
+        .flat()
+        .forEach((addonItem) => {
+          const cartKey = `addon_${addonItem.id}_${Date.now()}`;
+          addItem({
+            id: `addon_${addonItem.id}`,
+            name: addonItem.name,
+            price: Number(addonItem.price),
+            quantity: 1,
+            image: null,
+            category: "Add-ons",
+            cartKey,
+            isAddon: true,
+          });
+        });
+      setAddonModal(null);
+    },
+    [addItem],
   );
 
   const handleUpdate = useCallback(
     (id, qty) => {
       updateQuantity(id, qty);
     },
-    [updateQuantity]
+    [updateQuantity],
   );
 
   const filtered = items.filter((item) => {
@@ -177,16 +395,28 @@ const OrderMenu = () => {
 
   return (
     <div style={ps.page}>
-      {/* ── Top bar ── */}
+      {addonModal && (
+        <AddonModal
+          item={addonModal.item}
+          addonGroups={addonModal.groups}
+          onConfirm={handleAddonConfirm}
+          onCancel={() => setAddonModal(null)}
+        />
+      )}
+
+      {/* Top bar */}
       <div style={ps.topBar}>
         <div style={ps.brand}>
-          <span style={{ fontSize: 28 }}>🍽️</span>
+          {branding.logo ? (
+            <img src={branding.logo} alt="logo" style={{ height: 40, width: "auto", objectFit: "contain", borderRadius: 6 }} />
+          ) : (
+            <span style={{ fontSize: 28 }}>🍽️</span>
+          )}
           <div>
-            <div style={ps.brandName}>Tasteza</div>
-            <div style={ps.brandSub}>Kitchen &amp; Cafe</div>
+            <div style={{ ...ps.brandName, color: branding.color }}>{branding.name}</div>
+            <div style={ps.brandSub}>{branding.sub}</div>
           </div>
         </div>
-        {/* Cart icon hidden for Dine In */}
         {!isDineIn && (
           <button style={ps.cartBtn} onClick={() => setCartOpen(true)}>
             <span style={{ fontSize: 20 }}>🛒</span>
@@ -195,10 +425,9 @@ const OrderMenu = () => {
         )}
       </div>
 
-      {/* ── Compact strip: order type pills + inline search ── */}
       <OrderTypeBanner search={search} onSearchChange={setSearch} />
 
-      {/* ── Category tabs — pill style, only ONE can be active ── */}
+      {/* Category tabs */}
       <div style={ps.courseBarWrap} ref={courseBarRef}>
         <div style={ps.courseBar}>
           {allTabs.map((c) => {
@@ -209,13 +438,7 @@ const OrderMenu = () => {
                 key={c.name}
                 style={{
                   ...ps.courseTab,
-                  ...(isActive
-                    ? {
-                        ...ps.courseTabActive,
-                        background: activeColor,
-                        boxShadow: `0 2px 10px ${activeColor}55`,
-                      }
-                    : {}),
+                  ...(isActive ? { ...ps.courseTabActive, background: activeColor, boxShadow: `0 2px 10px ${activeColor}55` } : {}),
                 }}
                 onClick={() => setActiveCourse(c.name)}
               >
@@ -227,37 +450,33 @@ const OrderMenu = () => {
         </div>
       </div>
 
-      {/* ── Menu content ── */}
+      {/* Menu content */}
       <div style={ps.content}>
         {loading && (
           <div style={ps.centerMsg}>
             <div style={ps.spinner} />
-            <p style={{ color: "#9ca3af", marginTop: 14, fontSize: 15 }}>Loading menu…</p>
+            <p style={{ color: "#9ca3af", marginTop: 14, fontSize: 15 }}>Loading menu&hellip;</p>
           </div>
         )}
-
         {!loading && error && (
           <div style={ps.centerMsg}>
-            <p style={{ fontSize: 48 }}>😕</p>
+            <p style={{ fontSize: 48 }}>&#128533;</p>
             <p style={{ color: "#ef4444", fontSize: 14, textAlign: "center", maxWidth: 280 }}>{error}</p>
             <button style={ps.retryBtn} onClick={() => window.location.reload()}>
               Try Again
             </button>
           </div>
         )}
-
         {!loading && !error && filtered.length === 0 && (
           <div style={ps.centerMsg}>
-            <p style={{ fontSize: 48 }}>🍽️</p>
+            <p style={{ fontSize: 48 }}>&#127853;</p>
             <p style={{ color: "#9ca3af", fontSize: 15 }}>No dishes found</p>
           </div>
         )}
-
         {!loading &&
           !error &&
           grouped.map(({ course, items: groupItems }) => (
             <div key={course.name} style={ps.section}>
-              {/* Section header */}
               <div style={ps.sectionHeader}>
                 <div style={{ ...ps.sectionAccent, background: course.color || "#e23744" }} />
                 <div>
@@ -270,8 +489,6 @@ const OrderMenu = () => {
                   </p>
                 </div>
               </div>
-
-              {/* Cards grid */}
               <div style={ps.grid}>
                 {groupItems.map((item) => (
                   <MenuCard
@@ -288,11 +505,10 @@ const OrderMenu = () => {
               </div>
             </div>
           ))}
-
         <div style={{ height: 100 }} />
       </div>
 
-      {/* ── Sticky bottom cart bar ── */}
+      {/* Sticky bottom cart bar */}
       {!isDineIn && totalItems > 0 && (
         <div style={ps.stickyBar} onClick={() => setCartOpen(true)}>
           <div style={ps.stickyLeft}>
@@ -300,7 +516,7 @@ const OrderMenu = () => {
             <span style={ps.stickyItemsText}>item{totalItems > 1 ? "s" : ""} added</span>
           </div>
           <span style={ps.stickyTitle}>View Cart</span>
-          <span style={ps.stickyPrice}>₹{grandTotal.toFixed(0)} →</span>
+          <span style={ps.stickyPrice}>&#8377;{grandTotal.toFixed(0)} &#8594;</span>
         </div>
       )}
 
@@ -309,7 +525,7 @@ const OrderMenu = () => {
   );
 };
 
-// ── Card styles ────────────────────────────────────────────
+// ── Card styles ───────────────────────────────────────────
 const cs = {
   card: {
     background: "#fff",
@@ -321,32 +537,10 @@ const cs = {
     border: "2px solid transparent",
     transition: "border-color 0.2s, box-shadow 0.2s",
   },
-  cardInCart: {
-    border: "2px solid #e23744",
-    boxShadow: "0 4px 16px rgba(226,55,68,0.15)",
-  },
-  imgWrap: {
-    position: "relative",
-    width: "100%",
-    paddingBottom: "65%",
-    overflow: "hidden",
-    background: "#f5f5f5",
-    flexShrink: 0,
-  },
-  img: {
-    position: "absolute",
-    inset: 0,
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-  },
-  imgPlaceholder: {
-    position: "absolute",
-    inset: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  cardInCart: { border: "2px solid #e23744", boxShadow: "0 4px 16px rgba(226,55,68,0.15)" },
+  imgWrap: { position: "relative", width: "100%", paddingBottom: "65%", overflow: "hidden", background: "#f5f5f5", flexShrink: 0 },
+  img: { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" },
+  imgPlaceholder: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" },
   vegCorner: {
     position: "absolute",
     top: 7,
@@ -359,33 +553,10 @@ const cs = {
     justifyContent: "center",
     boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
   },
-  vegCornerDot: {
-    width: 9,
-    height: 9,
-    borderRadius: "50%",
-    background: "#fff",
-  },
-  body: {
-    padding: "10px 12px 12px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 4,
-    flex: 1,
-  },
-  nameRow: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 4,
-  },
-  name: {
-    margin: 0,
-    fontWeight: 700,
-    fontSize: 13,
-    color: "#1c1c1c",
-    lineHeight: 1.3,
-    flex: 1,
-  },
+  vegCornerDot: { width: 9, height: 9, borderRadius: "50%", background: "#fff" },
+  body: { padding: "10px 12px 12px", display: "flex", flexDirection: "column", gap: 4, flex: 1 },
+  nameRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 4 },
+  name: { margin: 0, fontWeight: 700, fontSize: 13, color: "#1c1c1c", lineHeight: 1.3, flex: 1 },
   spice: { fontSize: 11, flexShrink: 0, marginTop: 1 },
   desc: {
     margin: 0,
@@ -397,17 +568,8 @@ const cs = {
     WebkitBoxOrient: "vertical",
     overflow: "hidden",
   },
-  footer: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 6,
-    gap: 6,
-  },
+  footer: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6, gap: 6 },
   price: { fontWeight: 800, fontSize: 15, color: "#1c1c1c" },
-  gstNote: { fontSize: 10, color: "#93959f" },
-
-  // ADD button
   addBtn: {
     display: "flex",
     flexDirection: "column",
@@ -423,15 +585,7 @@ const cs = {
     gap: 1,
     flexShrink: 0,
   },
-  // Stepper (already in cart)
-  stepper: {
-    display: "flex",
-    alignItems: "center",
-    border: "2px solid #e23744",
-    borderRadius: 10,
-    overflow: "hidden",
-    flexShrink: 0,
-  },
+  stepper: { display: "flex", alignItems: "center", border: "2px solid #e23744", borderRadius: 10, overflow: "hidden", flexShrink: 0 },
   stepBtn: {
     width: 30,
     height: 48,
@@ -458,21 +612,12 @@ const cs = {
     justifyContent: "center",
     padding: "0 4px",
   },
-  inCartBar: {
-    height: 3,
-    borderRadius: 2,
-    background: "#e23744",
-    marginTop: 6,
-  },
+  inCartBar: { height: 3, borderRadius: 2, background: "#e23744", marginTop: 6 },
 };
 
-// ── Page-level styles ──────────────────────────────────────
+// ── Page styles ───────────────────────────────────────────
 const ps = {
-  page: {
-    minHeight: "100vh",
-    background: "#f4f4f5",
-    fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
-  },
+  page: { minHeight: "100vh", background: "#f4f4f5", fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif' },
   topBar: {
     background: "#fff",
     padding: "12px 16px",
@@ -485,7 +630,7 @@ const ps = {
     zIndex: 300,
   },
   brand: { display: "flex", alignItems: "center", gap: 10 },
-  brandName: { fontSize: 21, fontWeight: 900, color: "#e23744", lineHeight: 1.1, letterSpacing: -0.5 },
+  brandName: { fontSize: 21, fontWeight: 900, lineHeight: 1.1, letterSpacing: -0.5 },
   brandSub: { fontSize: 10, color: "#93959f", letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 500 },
   cartBtn: {
     position: "relative",
@@ -514,20 +659,8 @@ const ps = {
     alignItems: "center",
     justifyContent: "center",
   },
-  courseBarWrap: {
-    background: "#fff",
-    borderBottom: "1px solid #ebebeb",
-    position: "sticky",
-    top: 56,
-    zIndex: 200,
-  },
-  courseBar: {
-    display: "flex",
-    gap: 8,
-    overflowX: "auto",
-    padding: "10px 12px",
-    scrollbarWidth: "none",
-  },
+  courseBarWrap: { background: "#fff", borderBottom: "1px solid #ebebeb", position: "sticky", top: 56, zIndex: 200 },
+  courseBar: { display: "flex", gap: 8, overflowX: "auto", padding: "10px 12px", scrollbarWidth: "none" },
   courseTab: {
     whiteSpace: "nowrap",
     padding: "8px 16px",
@@ -541,21 +674,9 @@ const ps = {
     transition: "all 0.15s",
     flexShrink: 0,
   },
-  courseTabActive: {
-    color: "#fff",
-    border: "1.5px solid transparent",
-    fontWeight: 800,
-  },
-
+  courseTabActive: { color: "#fff", border: "1.5px solid transparent", fontWeight: 800 },
   content: { padding: "16px 12px 0" },
-  centerMsg: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "80px 20px",
-    gap: 10,
-  },
+  centerMsg: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "80px 20px", gap: 10 },
   spinner: {
     width: 38,
     height: 38,
@@ -576,38 +697,11 @@ const ps = {
     fontSize: 14,
   },
   section: { marginBottom: 28 },
-  sectionHeader: {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: 12,
-    marginBottom: 14,
-    paddingLeft: 4,
-  },
-  sectionAccent: {
-    width: 5,
-    height: 42,
-    borderRadius: 8,
-    flexShrink: 0,
-    marginTop: 2,
-  },
-  sectionTitle: {
-    margin: 0,
-    fontSize: 18,
-    fontWeight: 900,
-    color: "#1c1c1c",
-    letterSpacing: -0.3,
-  },
-  sectionCount: {
-    margin: "2px 0 0",
-    fontSize: 12,
-    color: "#93959f",
-    fontWeight: 500,
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-    gap: 16,
-  },
+  sectionHeader: { display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14, paddingLeft: 4 },
+  sectionAccent: { width: 5, height: 42, borderRadius: 8, flexShrink: 0, marginTop: 2 },
+  sectionTitle: { margin: 0, fontSize: 18, fontWeight: 900, color: "#1c1c1c", letterSpacing: -0.3 },
+  sectionCount: { margin: "2px 0 0", fontSize: 12, color: "#93959f", fontWeight: 500 },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 16 },
   stickyBar: {
     position: "fixed",
     bottom: 0,

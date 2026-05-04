@@ -105,11 +105,58 @@ router.get('/menu', async (req, res) => {
     const [rows] = await db.query(sql);
     console.log(`[public/menu] Returned ${rows.length} items`);
 
+    // Attach addon_group_ids to each item
+    try {
+      const [addonLinks] = await db.query(
+        'SELECT menu_item_id, addon_group_id FROM menu_item_addon_groups'
+      );
+      const addonMap = {};
+      addonLinks.forEach(l => {
+        if (!addonMap[l.menu_item_id]) addonMap[l.menu_item_id] = [];
+        addonMap[l.menu_item_id].push(l.addon_group_id);
+      });
+      rows.forEach(row => { row.addon_group_ids = addonMap[row.id] || []; });
+    } catch { /* addon_groups table may not exist yet */ }
+
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('[public/menu] ERROR:', err.message);
     res.status(500).json({ success: false, message: err.message, stack: err.stack });
   }
+});
+
+// GET /api/public/addon-groups — returns all active addon groups with items (no auth)
+router.get('/addon-groups', async (req, res) => {
+  try {
+    const [groups] = await db.query('SELECT * FROM addon_groups WHERE is_active = 1');
+    const [items] = await db.query('SELECT * FROM addon_items WHERE is_active = 1 ORDER BY group_id, sort_order');
+    const result = groups.map(g => ({ ...g, items: items.filter(i => i.group_id === g.id) }));
+    res.json({ success: true, data: result });
+  } catch {
+    res.json({ success: true, data: [] }); // graceful if table not yet created
+  }
+});
+
+// POST /api/public/coupon/validate — no auth, for customers at checkout
+router.post('/coupon/validate', async (req, res) => {
+  try {
+    const { code, order_amount } = req.body;
+    if (!code) return res.status(400).json({ success: false, message: 'Coupon code required.' });
+    const [[c]] = await db.query("SELECT * FROM coupons WHERE code=? AND is_active=1", [code.toUpperCase()]);
+    if (!c) return res.status(404).json({ success: false, message: 'Invalid coupon code.' });
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (c.valid_from && today < c.valid_from) return res.status(400).json({ success: false, message: 'Coupon not yet active.' });
+    if (c.valid_until && today > c.valid_until) return res.status(400).json({ success: false, message: 'Coupon has expired.' });
+    if (c.usage_limit && c.used_count >= c.usage_limit) return res.status(400).json({ success: false, message: 'Coupon usage limit reached.' });
+    if (c.min_order_amount && parseFloat(order_amount) < parseFloat(c.min_order_amount))
+      return res.status(400).json({ success: false, message: `Minimum order \u20b9${c.min_order_amount} required.` });
+    let discount = c.discount_type === 'percentage'
+      ? (parseFloat(order_amount) * parseFloat(c.discount_value) / 100)
+      : parseFloat(c.discount_value);
+    if (c.max_discount) discount = Math.min(discount, parseFloat(c.max_discount));
+    res.json({ success: true, data: { code: c.code, discount_type: c.discount_type, discount_value: c.discount_value, calculated_discount: discount.toFixed(2), description: c.description } });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
 // Debug endpoint — shows real table/column info without auth

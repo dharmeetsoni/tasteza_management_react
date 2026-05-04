@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "project": "Tasteza Management System",
+  "description": "Restaurant POS + Management System — React 18 frontend, Express/MySQL backend, offline-capable",
+  "primaryFiles": [
+    "CLAUDE.md",
+    "src/App.js",
+    "src/api/index.js",
+    "src/components/layout/AppShell.js",
+    "server/server.js",
+    "server/config/db.js",
+    "server/middleware/auth.js",
+    "server/schema.sql",
+    "server/migrator.js"
+  ],
+  "preferences": {
+    "codeStyle": "inline CSS with CSS variables, no UI framework",
+    "errorHandling": "try/catch with { success, data, message } envelope",
+    "database": "MySQL via mysql2/promise with parameterized queries",
+    "auth": "JWT Bearer token in Authorization header",
+    "stateManagement": "React Context API only (no Redux)",
+    "apiCalls": "Always through src/api/index.js wrappers (oGet/oMutate)",
+    "navigation": "AppShell.js state key, NOT React Router routes for admin pages"
+  },
+  "conventions": {
+    "dbColumns": "snake_case",
+    "jsVariables": "camelCase",
+    "components": "PascalCase",
+    "apiFunctions": "verb-first camelCase (getOrders, createOrder, deleteMenuItem)"
+  },
+  "rules": [".claude/rules/frontend.md", ".claude/rules/database.md", ".claude/rules/api.md"],
+  "agents": [
+    ".claude/agents/code-reviewer.md",
+    ".claude/agents/debugger.md",
+    ".claude/agents/test-writer.md",
+    ".claude/agents/refactorer.md",
+    ".claude/agents/doc-writer.md",
+    ".claude/agents/security-auditor.md"
+  ]
+}
